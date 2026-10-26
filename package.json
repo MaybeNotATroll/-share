@@ -1,19 +1,14 @@
 {
-  "name": "-share",
+  "name": "numa-share",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "private": true,
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test tests/*.test.ts"
   },
-  "repository": {
-    "type": "git",
-    "url": "http://localhost:26831/MaybeNotATroll/-share"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
     "@supabase/supabase-js": "^2.118.0",
     "next": "^16.4.3",
