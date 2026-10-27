@@ -75,10 +75,17 @@ Do not expose the moderation token to visitors or automate removals without revi
 ## Deployment to Vercel
 
 1. Create a Supabase project and apply the migration before deploying.
-2. Import this repository into Vercel as a Next.js project.
-3. Set the required variables above in the Vercel project settings for the appropriate environments. Keep service-role, moderation, and cron secrets server-side.
-4. Deploy. Confirm the Vercel Cron is enabled and `CRON_SECRET` is configured.
-5. Test a public space, generate a private space, and upload/download a small file in each. Redeploy, then reopen the same spaces and verify the files remain available. This confirms files are in persistent object storage, not the application filesystem.
+2. Import this repository into Vercel. In **Settings → Build and Deployment**, select **Next.js** as the Framework Preset and set **Root Directory** to the repository root (leave it empty, not `app` or `src`). This is where `package.json`, `next.config.ts`, and `vercel.json` live. Use Node.js **24.x**.
+3. Disable dashboard overrides for Build Command, Output Directory, and Install Command. The checked-in `vercel.json` pins the Next.js framework, `npm run build`, and `.next` output. Keep `package-lock.json` committed for reproducible dependency installation (`npm ci` locally). Remove any old `public`, `dist`, or `out` output setting and any `next export` build command.
+4. Set the required variables above in the Vercel project settings for the appropriate environments. Keep service-role, moderation, and cron secrets server-side.
+5. Deploy the commit containing this configuration (or redeploy that commit with the build cache disabled). Confirm the build runs `next build`, uses the Next.js framework, and includes dynamic `/api/*` and `/space/[code]` routes. Confirm the Vercel Cron is enabled and `CRON_SECRET` is configured.
+6. Test a public space, generate a private space, and upload/download a small file in each. Redeploy, then reopen the same spaces and verify the files remain available. This confirms files are in persistent object storage, not the application filesystem.
+
+### Why “Missing public directory” occurs
+
+This is a Next.js App Router application, not a static site. `next build` writes `.next` and Vercel's Next.js adapter deploys its server handlers and dynamic routes. A `public` folder is optional source content for static assets, **not** the build output. Expecting `public` indicates an incorrect effective framework/output configuration (for example, the **Other** preset or a stale Output Directory override); selecting a subdirectory as Root Directory can also prevent Vercel from discovering this project's configuration.
+
+The repository previously specified only the cron in `vercel.json`, leaving framework/output selection to Vercel's project settings and auto-detection. The explicit settings now keep this deployment on the Next.js pipeline. Dashboard settings and private Vercel build logs are not tracked here, so the exact previous dashboard value must be confirmed in the failed deployment's settings/logs. Do not add an empty `public` folder, use `output: "export"`, or deploy `.next` as a generic static directory: API routes, private-space generation, and signed Storage operations require the Next.js server runtime.
 
 If using a nonstandard Supabase hostname, update the CSP host allowlist in `next.config.ts` to the exact trusted Supabase host before deployment.
 
