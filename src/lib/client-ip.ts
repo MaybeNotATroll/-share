@@ -11,7 +11,7 @@ export function trustedClientIp(request: Request): string {
     throw new ServiceSetupError("A trusted client IP source is not configured.");
   }
   const ip = request.headers.get(header)?.trim() ?? "";
-  if (!isIP(ip)) throw new ServiceSetupError("The trusted client IP is missing or invalid.");
+  if (!isIP(ip) || ip.includes("%")) throw new ServiceSetupError("The trusted client IP is missing or invalid.");
   if (isIP(ip) === 4) return ip;
   // Canonicalize equivalent IPv6 spellings, including mapped IPv4 addresses.
   const normalized = new URL(`http://[${ip}]/`).hostname.slice(1, -1).toLowerCase();

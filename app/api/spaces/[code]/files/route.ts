@@ -172,7 +172,7 @@ export async function POST(
       const fileId = result?.id;
       if (reserveError || typeof fileId !== "string") {
         for (const reserved of reservations) {
-          await supabase.from("files").delete().eq("id", reserved.id);
+          await supabase.from("files").delete().eq("id", reserved.id).eq("status", "pending");
         }
         if (reserveError && !["54000", "22023"].includes(reserveError.code)) {
           throw databaseError(reserveError, "An upload could not be reserved.");
@@ -188,9 +188,9 @@ export async function POST(
         const uploadUrl = await createUploadUrl(storageKey, file.input.size, file.mime);
         reservations.push({ id: fileId, storageKey, uploadUrl, index });
       } catch {
-        await supabase.from("files").delete().eq("id", fileId);
+        await supabase.from("files").delete().eq("id", fileId).eq("status", "pending");
         for (const reserved of reservations) {
-          await supabase.from("files").delete().eq("id", reserved.id);
+          await supabase.from("files").delete().eq("id", reserved.id).eq("status", "pending");
         }
         return jsonError("An upload could not be started. Please try again.", 503);
       }

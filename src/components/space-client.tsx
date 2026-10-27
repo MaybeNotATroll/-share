@@ -162,7 +162,9 @@ export function SpaceClient({ code }: { code: string }) {
         }),
         cache: "no-store",
       });
-      const { uploads: reservations, rejected = [] } = await responseJson(start);
+      const payload = await start.json();
+      if (!start.ok && !Array.isArray(payload.rejected)) throw new Error(uploadErrorMessage(payload));
+      const { uploads: reservations, rejected = [] } = payload;
       for (const rejection of rejected) {
         setUploads((current) => current.map((upload, index) =>
           index === rejection.index
@@ -339,7 +341,7 @@ export function SpaceClient({ code }: { code: string }) {
         <span className="upload-symbol" aria-hidden="true">↑</span>
         <div>
           <h2>{uploading ? "Uploading your files…" : "Drop files here"}</h2>
-          <p>Images, videos, PDFs, and documents · up to 50 MB each</p>
+          <p>Images, videos, PDFs, and documents · up to 50 MiB each · 500 MB per IP per UTC day</p>
         </div>
         <button className="button button-primary" type="button" disabled={uploading} onClick={() => inputRef.current?.click()}>
           Choose files
@@ -352,7 +354,7 @@ export function SpaceClient({ code }: { code: string }) {
             <div className="progress-row" key={`${upload.name}-${index}`}>
               <span className={`progress-state ${upload.status}`}>{upload.status === "done" ? "✓" : upload.status === "failed" ? "!" : "↑"}</span>
               <div className="progress-copy">
-                <div><strong>{upload.name}</strong><span>{upload.error ?? (upload.status === "done" ? "Uploaded" : `${upload.progress}%`)}</span></div>
+                <div className={upload.error ? "has-error" : undefined}><strong>{upload.name}</strong><span>{upload.error ?? (upload.status === "done" ? "Uploaded" : `${upload.progress}%`)}</span></div>
                 <progress value={upload.status === "done" ? 100 : upload.progress} max="100" aria-label={`${upload.name} upload progress`} />
               </div>
             </div>

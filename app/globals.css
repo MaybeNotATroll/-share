@@ -205,6 +205,8 @@ button { color: inherit; }
 .progress-state.failed { background: #3a2320; color: var(--danger); }
 .progress-copy { min-width: 0; flex: 1; }
 .progress-copy > div { display: flex; justify-content: space-between; gap: 15px; color: var(--muted); font-size: 11px; }
+.progress-copy > div.has-error { flex-direction: column; gap: 6px; }
+.progress-copy > div.has-error > span { line-height: 1.6; overflow-wrap: anywhere; }
 .progress-copy strong { overflow: hidden; color: #dce2dd; font-size: 12px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .progress-copy progress { width: 100%; height: 4px; display: block; margin-top: 7px; accent-color: var(--accent); }
 
