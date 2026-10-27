@@ -1,5 +1,5 @@
 import { spaceCodeSchema } from "@/src/lib/validation";
-import { enforceRateLimit, jsonError, jsonNoStore, resolveSpace } from "@/src/lib/http";
+import { enforceRateLimit, getSpace, jsonError, jsonNoStore, serviceError } from "@/src/lib/http";
 
 export const runtime = "nodejs";
 
@@ -14,17 +14,12 @@ export async function GET(
       return jsonError("Too many requests. Try again shortly.", 429);
     }
 
-    const { space, rateLimited } = await resolveSpace(request, code);
-    if (rateLimited) return jsonError("Too many new spaces requested. Try again later.", 429);
-    if (!space) return jsonError("This space is unavailable.", 404);
-    return jsonNoStore({
-      space: {
-        code: space.code,
-        visibility: space.visibility,
-        createdAt: space.created_at,
-      },
-    });
-  } catch {
-    return jsonError("The service is temporarily unavailable. Please try again.", 503);
+    // Every valid number has its own private space. A database row is only created
+    // when the first file is posted, so opening an unused number does not reserve it.
+    const space = await getSpace(code, true);
+    if (space?.blocked_at) return jsonError("This space is unavailable.", 404);
+    return jsonNoStore({ space: { code, createdAt: space?.created_at ?? null } });
+  } catch (error) {
+    return serviceError(error);
   }
 }

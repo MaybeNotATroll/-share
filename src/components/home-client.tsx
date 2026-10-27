@@ -5,16 +5,14 @@ import { useRouter } from "next/navigation";
 import { formatCode, isValidSpaceCode } from "@/src/lib/code";
 import { copyText } from "@/src/lib/clipboard";
 
-type GeneratedSpace = { code: string; managementCredential: string };
-
 export function HomeClient() {
   const router = useRouter();
   const busyRef = useRef(false);
   const [code, setCode] = useState("");
-  const [generated, setGenerated] = useState<GeneratedSpace | null>(null);
+  const [generated, setGenerated] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [copied, setCopied] = useState("");
+  const [copied, setCopied] = useState(false);
 
   function openSpace(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -36,26 +34,27 @@ export function HomeClient() {
     try {
       const response = await fetch("/api/spaces/generate", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ idempotencyKey: crypto.randomUUID() }),
         cache: "no-store",
       });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error ?? "Could not create a private space.");
-      setGenerated(payload as GeneratedSpace);
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || typeof payload.code !== "string") {
+        throw new Error(payload.error ?? "Could not generate a number. Please try again.");
+      }
+      setCopied(false);
+      setGenerated(payload.code);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not create a private space.");
+      setError(reason instanceof Error ? reason.message : "Could not generate a number. Please try again.");
     } finally {
       busyRef.current = false;
       setBusy(false);
     }
   }
 
-  async function copy(value: string, label: string) {
+  async function copy(value: string) {
     try {
       await copyText(value);
-      setCopied(label);
-      window.setTimeout(() => setCopied(""), 2200);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2200);
     } catch {
       setError("Could not copy. Select and copy the code manually.");
     }
@@ -75,7 +74,7 @@ export function HomeClient() {
         <div className="eyebrow"><span className="status-dot" /> A quieter way to share</div>
         <h1>Your files.<br /><span>One number away.</span></h1>
         <p className="hero-copy">
-          Enter a number to open its space, or make a private one to share with people you trust.
+          Enter a number to open its private space, or generate a new one to share with people you trust.
         </p>
 
         <div className="entry-card">
@@ -116,33 +115,23 @@ export function HomeClient() {
             disabled={busy}
           >
             <span className="sparkle" aria-hidden="true">✳</span>
-            {busy ? "Creating your private space…" : "Generate a private number"}
+            {busy ? "Finding an unused number…" : "Generate a private number"}
           </button>
           {generated && (
             <div className="generated-panel" aria-live="polite">
               <p className="generated-label">Your private number is ready</p>
-              <p className="generated-code" aria-label={`Private code: ${generated.code}`}>
-                {formatCode(generated.code)}
+              <p className="generated-code" aria-label={`Private code: ${generated}`}>
+                {formatCode(generated)}
               </p>
               <p className="credential-warning">
-                Save both credentials now. Anyone with the number can access this space; only the
-                separate management key can delete its files. The management key is shown once.
+                Nothing has been posted under this number yet. Save it now — anyone with the number
+                can view and add files, and it cannot be recovered if lost.
               </p>
-              <div className="credential-box">
-                <span>Management key</span>
-                <code>{generated.managementCredential}</code>
-              </div>
               <div className="button-row">
-                <button className="button button-secondary" onClick={() => copy(generated.code, "code")}>
-                  {copied === "code" ? "Number copied" : "Copy number"}
+                <button className="button button-secondary" type="button" onClick={() => copy(generated)}>
+                  {copied ? "Code copied" : "Copy code"}
                 </button>
-                <button
-                  className="button button-secondary"
-                  onClick={() => copy(generated.managementCredential, "key")}
-                >
-                  {copied === "key" ? "Key copied" : "Copy management key"}
-                </button>
-                <a className="button button-primary" href={`/space/${generated.code}`} target="_blank" rel="noreferrer">
+                <a className="button button-primary" href={`/space/${generated}`}>
                   Open space ↗
                 </a>
               </div>
@@ -153,21 +142,21 @@ export function HomeClient() {
 
         <div className="privacy-cards">
           <article>
-            <span className="privacy-icon public-icon" aria-hidden="true">◎</span>
-            <h2>Public spaces</h2>
-            <p>Short numbers are open to everyone. Anyone who enters one can see and add files.</p>
+            <span className="privacy-icon private-icon" aria-hidden="true">⌁</span>
+            <h2>Every number is private</h2>
+            <p>Files can only be listed, viewed, or added by someone who enters the exact number.</p>
           </article>
           <article>
-            <span className="privacy-icon private-icon" aria-hidden="true">⌁</span>
-            <h2>Private spaces</h2>
-            <p>Long numbers are unlisted, not encrypted. Anyone who gets the number can access it.</p>
+            <span className="privacy-icon public-icon" aria-hidden="true">◎</span>
+            <h2>Nothing gets deleted</h2>
+            <p>Anyone with the number can view and post files, but cannot delete what was shared.</p>
           </article>
         </div>
       </section>
 
       <footer className="site-footer">
         <span>Share thoughtfully.</span>
-        <span>Anything in a public space may be viewed and downloaded by anyone.</span>
+        <span>Short numbers are easy to guess. Use a generated 100-digit number for real privacy.</span>
       </footer>
     </main>
   );
