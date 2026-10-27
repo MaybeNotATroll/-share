@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { getVisibility, spaceCodeSchema } from "@/src/lib/code";
+import { spaceCodeSchema } from "@/src/lib/validation";
 import {
   getFileType,
   maxFileBytes,
@@ -11,7 +11,7 @@ import {
   uploadMetadataSchema,
   validTypeHint,
 } from "@/src/lib/files";
-import { enforceRateLimit, getSpace, jsonError, jsonNoStore } from "@/src/lib/http";
+import { enforceRateLimit, readJsonBody, jsonError, jsonNoStore, resolveSpace } from "@/src/lib/http";
 import { getSupabase, STORAGE_BUCKET } from "@/src/lib/supabase";
 
 export const runtime = "nodejs";
@@ -30,13 +30,15 @@ export async function GET(
     if (!(await enforceRateLimit(request, "list", 120, 60))) {
       return jsonError("Too many requests. Try again shortly.", 429);
     }
-    const space = await getSpace(code, getVisibility(code) === "public");
+    const { space, rateLimited } = await resolveSpace(request, code);
+    if (rateLimited) return jsonError("Too many new spaces requested. Try again later.", 429);
     if (!space) return jsonError("This space is unavailable.", 404);
 
     const url = new URL(request.url);
     const rawLimit = Number(url.searchParams.get("limit") ?? 24);
     const limit = Number.isInteger(rawLimit) ? Math.min(Math.max(rawLimit, 1), 48) : 24;
     const cursor = url.searchParams.get("cursor");
+    if (cursor && cursor.length > 512) return jsonError("The file-list cursor is invalid.", 400);
     let query = getSupabase()
       .from("files")
       .select("id,original_name,content_type,size_bytes,created_at")
@@ -54,7 +56,7 @@ export async function GET(
         return jsonError("The file-list cursor is invalid.", 400);
       }
       const parsed = z.object({
-        createdAt: z.string().datetime(),
+        createdAt: z.string().datetime({ offset: true }),
         id: z.string().uuid(),
       }).safeParse(decoded);
       if (!parsed.success) return jsonError("The file-list cursor is invalid.", 400);
@@ -97,17 +99,14 @@ export async function POST(
       return jsonError("Too many uploads. Try again shortly.", 429);
     }
 
-    let payload: unknown;
-    try {
-      payload = await request.json();
-    } catch {
-      return jsonError("Upload details are invalid.", 400);
-    }
-    const parsed = requestSchema.safeParse(payload);
+    const body = await readJsonBody(request, 16_384);
+    if (!body.ok) return jsonError(body.tooLarge ? "Upload details are too large." : "Upload details are invalid.", body.tooLarge ? 413 : 400);
+    const parsed = requestSchema.safeParse(body.value);
     if (!parsed.success || parsed.data.files.length > maxFilesPerRequest()) {
       return jsonError(`Choose up to ${maxFilesPerRequest()} files at a time.`, 400);
     }
-    const space = await getSpace(code, getVisibility(code) === "public");
+    const { space, rateLimited } = await resolveSpace(request, code);
+    if (rateLimited) return jsonError("Too many new spaces requested. Try again later.", 429);
     if (!space) return jsonError("This space is unavailable.", 404);
 
     const prepared = parsed.data.files.map((input) => {

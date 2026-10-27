@@ -1,5 +1,5 @@
-import { spaceCodeSchema, getVisibility } from "@/src/lib/code";
-import { enforceRateLimit, getSpace, jsonError, jsonNoStore } from "@/src/lib/http";
+import { spaceCodeSchema } from "@/src/lib/validation";
+import { enforceRateLimit, jsonError, jsonNoStore, resolveSpace } from "@/src/lib/http";
 
 export const runtime = "nodejs";
 
@@ -14,7 +14,8 @@ export async function GET(
       return jsonError("Too many requests. Try again shortly.", 429);
     }
 
-    const space = await getSpace(code, getVisibility(code) === "public");
+    const { space, rateLimited } = await resolveSpace(request, code);
+    if (rateLimited) return jsonError("Too many new spaces requested. Try again later.", 429);
     if (!space) return jsonError("This space is unavailable.", 404);
     return jsonNoStore({
       space: {

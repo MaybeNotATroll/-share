@@ -19,6 +19,15 @@ create table public.spaces (
 create index spaces_visibility_created_idx
   on public.spaces (visibility, created_at desc);
 
+create table public.private_generation_requests (
+  request_hash text primary key,
+  created_at timestamptz not null default now(),
+  space_id uuid references public.spaces(id) on delete set null
+);
+
+create index private_generation_requests_created_idx
+  on public.private_generation_requests (created_at);
+
 create table public.files (
   id uuid primary key default gen_random_uuid(),
   space_id uuid not null references public.spaces(id) on delete cascade,
@@ -56,14 +65,26 @@ create table public.rate_limits (
   primary key (key_hash, window_start)
 );
 
+create table public.storage_cleanup_queue (
+  storage_key text primary key,
+  scheduled_at timestamptz not null default now(),
+  cleanup_after timestamptz not null
+);
+
+create index storage_cleanup_due_idx on public.storage_cleanup_queue (cleanup_after);
+
 alter table public.spaces enable row level security;
 alter table public.files enable row level security;
 alter table public.reports enable row level security;
 alter table public.rate_limits enable row level security;
+alter table public.private_generation_requests enable row level security;
+alter table public.storage_cleanup_queue enable row level security;
 
-revoke all on public.spaces, public.files, public.reports, public.rate_limits
+revoke all on public.spaces, public.files, public.reports, public.rate_limits,
+  public.private_generation_requests, public.storage_cleanup_queue
   from anon, authenticated;
-grant all on public.spaces, public.files, public.reports, public.rate_limits
+grant all on public.spaces, public.files, public.reports, public.rate_limits,
+  public.private_generation_requests, public.storage_cleanup_queue
   to service_role;
 
 create or replace function public.check_rate_limit(
@@ -184,7 +205,7 @@ insert into storage.buckets (
   array[
     'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/avif',
     'video/mp4', 'video/webm', 'application/pdf', 'text/plain',
-    'text/markdown', 'text/csv', 'application/json', 'application/msword',
+    'text/markdown', 'text/csv', 'application/json', 'application/rtf', 'application/msword',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     'application/vnd.ms-excel',
     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

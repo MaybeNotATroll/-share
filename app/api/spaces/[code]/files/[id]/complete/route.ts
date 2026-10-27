@@ -1,8 +1,9 @@
 import { z } from "zod";
-import { getVisibility, spaceCodeSchema } from "@/src/lib/code";
+import { spaceCodeSchema } from "@/src/lib/validation";
 import { verifyFileSignature } from "@/src/lib/files";
-import { enforceRateLimit, getSpace, jsonError, jsonNoStore } from "@/src/lib/http";
+import { discardSmallRequestBody, enforceRateLimit, getSpace, jsonError, jsonNoStore } from "@/src/lib/http";
 import { getSupabase, STORAGE_BUCKET } from "@/src/lib/supabase";
+import { queueStorageCleanup } from "@/src/lib/storage-cleanup";
 
 export const runtime = "nodejs";
 
@@ -40,6 +41,7 @@ async function readFileHeader(url: string) {
   return {
     bytes: Uint8Array.from(chunks.flatMap((chunk) => Array.from(chunk))),
     size: Number(range[2]),
+    contentType: response.headers.get("content-type")?.split(";")[0].trim().toLowerCase() ?? "",
   };
 }
 
@@ -48,6 +50,7 @@ export async function POST(
   context: { params: Promise<{ code: string; id: string }> },
 ) {
   try {
+    if (!(await discardSmallRequestBody(request))) return jsonError("Request is too large.", 413);
     const { code, id } = await context.params;
     if (!spaceCodeSchema.safeParse(code).success || !z.string().uuid().safeParse(id).success) {
       return jsonError("The upload could not be completed.", 400);
@@ -56,7 +59,7 @@ export async function POST(
       return jsonError("Too many requests. Try again shortly.", 429);
     }
 
-    const space = await getSpace(code, getVisibility(code) === "public");
+    const space = await getSpace(code);
     if (!space) return jsonError("This space is unavailable.", 404);
     const supabase = getSupabase();
     const { data: file, error: fileError } = await supabase
@@ -74,8 +77,7 @@ export async function POST(
       .createSignedUrl(file.storage_key, 60);
     if (signError || !signed) return jsonError("The uploaded file was not found.", 400);
 
-    const { bytes, size } = await readFileHeader(signed.signedUrl);
-    const extension = file.storage_key;
+    const { bytes, size, contentType } = await readFileHeader(signed.signedUrl);
     const { data: metadata, error: metadataError } = await supabase
       .from("files")
       .select("original_name")
@@ -85,9 +87,14 @@ export async function POST(
     if (
       metadataError ||
       size !== Number(file.size_bytes) ||
+      contentType !== file.content_type ||
       !verifyFileSignature(ext, bytes)
     ) {
-      await supabase.storage.from(STORAGE_BUCKET).remove([file.storage_key]);
+      if (!(await queueStorageCleanup(supabase, [file.storage_key]))) {
+        return jsonError("The file could not be validated. Please retry.", 503);
+      }
+      const { error: storageError } = await supabase.storage.from(STORAGE_BUCKET).remove([file.storage_key]);
+      if (storageError) return jsonError("The file could not be validated. Please retry.", 503);
       await supabase.from("files").delete().eq("id", id).eq("status", "pending");
       return jsonError("The file content did not pass validation.", 400);
     }

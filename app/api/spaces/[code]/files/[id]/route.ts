@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getVisibility, spaceCodeSchema } from "@/src/lib/code";
+import { spaceCodeSchema } from "@/src/lib/validation";
 import { enforceRateLimit, getSpace, jsonError, jsonNoStore } from "@/src/lib/http";
 import { getSupabase, STORAGE_BUCKET } from "@/src/lib/supabase";
 
@@ -18,7 +18,7 @@ export async function GET(
       return jsonError("Too many requests. Try again shortly.", 429);
     }
     const mode = new URL(request.url).searchParams.get("mode") === "preview" ? "preview" : "download";
-    const space = await getSpace(code, getVisibility(code) === "public");
+    const space = await getSpace(code);
     if (!space) return jsonError("This file is unavailable.", 404);
 
     const supabase = getSupabase();

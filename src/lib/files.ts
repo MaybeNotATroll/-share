@@ -1,40 +1,8 @@
 import { z } from "zod";
+import { FILE_TYPES } from "./file-types.ts";
 
 export const MAX_FILENAME_LENGTH = 180;
-export const FILE_TYPES: Record<string, { mime: string; preview: boolean }> = {
-  jpg: { mime: "image/jpeg", preview: true },
-  jpeg: { mime: "image/jpeg", preview: true },
-  png: { mime: "image/png", preview: true },
-  gif: { mime: "image/gif", preview: true },
-  webp: { mime: "image/webp", preview: true },
-  avif: { mime: "image/avif", preview: true },
-  mp4: { mime: "video/mp4", preview: true },
-  webm: { mime: "video/webm", preview: true },
-  pdf: { mime: "application/pdf", preview: true },
-  txt: { mime: "text/plain", preview: false },
-  md: { mime: "text/markdown", preview: false },
-  csv: { mime: "text/csv", preview: false },
-  json: { mime: "application/json", preview: false },
-  doc: { mime: "application/msword", preview: false },
-  docx: {
-    mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    preview: false,
-  },
-  xls: { mime: "application/vnd.ms-excel", preview: false },
-  xlsx: {
-    mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    preview: false,
-  },
-  ppt: { mime: "application/vnd.ms-powerpoint", preview: false },
-  pptx: {
-    mime: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    preview: false,
-  },
-  odt: { mime: "application/vnd.oasis.opendocument.text", preview: false },
-  ods: { mime: "application/vnd.oasis.opendocument.spreadsheet", preview: false },
-  odp: { mime: "application/vnd.oasis.opendocument.presentation", preview: false },
-  zip: { mime: "application/zip", preview: false },
-};
+export { FILE_TYPES };
 
 export const uploadMetadataSchema = z.object({
   name: z.string().min(1).max(1024),
@@ -49,11 +17,9 @@ export function sanitizeFilename(filename: string): string {
     .replace(/[<>:"|?*]/g, "")
     .replace(/\s+/g, " ")
     .trim()
-    .replace(/^\.+/, "")
-    .slice(0, MAX_FILENAME_LENGTH)
-    .trim();
+    .replace(/^\.+/, "");
 
-  return cleaned || "shared-file";
+  return Array.from(cleaned).slice(0, MAX_FILENAME_LENGTH).join("").trim() || "shared-file";
 }
 
 export function getFileType(filename: string) {
@@ -91,6 +57,8 @@ export function verifyFileSignature(extension: string, bytes: Uint8Array): boole
       return startsWith(0x1a, 0x45, 0xdf, 0xa3);
     case "pdf":
       return ascii(0, 5) === "%PDF-";
+    case "rtf":
+      return ascii(0, 5) === "{\\rtf";
     case "doc":
     case "xls":
     case "ppt":

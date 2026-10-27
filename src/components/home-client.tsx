@@ -1,30 +1,15 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { formatCode, spaceCodeSchema } from "@/src/lib/code";
+import { formatCode, isValidSpaceCode } from "@/src/lib/code";
+import { copyText } from "@/src/lib/clipboard";
 
 type GeneratedSpace = { code: string; managementCredential: string };
 
-async function copyText(value: string) {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(value);
-    return;
-  }
-  const field = document.createElement("textarea");
-  field.value = value;
-  field.setAttribute("readonly", "");
-  field.style.position = "fixed";
-  field.style.opacity = "0";
-  document.body.append(field);
-  field.select();
-  const copied = document.execCommand("copy");
-  field.remove();
-  if (!copied) throw new Error("Copy is not available in this browser.");
-}
-
 export function HomeClient() {
   const router = useRouter();
+  const busyRef = useRef(false);
   const [code, setCode] = useState("");
   const [generated, setGenerated] = useState<GeneratedSpace | null>(null);
   const [busy, setBusy] = useState(false);
@@ -34,7 +19,7 @@ export function HomeClient() {
   function openSpace(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const value = code.trim();
-    if (!spaceCodeSchema.safeParse(value).success) {
+    if (!isValidSpaceCode(value)) {
       setError("Enter a code made of 1 to 100 digits.");
       return;
     }
@@ -43,7 +28,8 @@ export function HomeClient() {
   }
 
   async function generatePrivateNumber() {
-    if (busy) return;
+    if (busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
     setError("");
     setGenerated(null);
@@ -51,7 +37,7 @@ export function HomeClient() {
       const response = await fetch("/api/spaces/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: "{}",
+        body: JSON.stringify({ idempotencyKey: crypto.randomUUID() }),
         cache: "no-store",
       });
       const payload = await response.json();
@@ -60,6 +46,7 @@ export function HomeClient() {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not create a private space.");
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   }

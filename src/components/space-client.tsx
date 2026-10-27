@@ -1,8 +1,9 @@
 "use client";
 
 import { ChangeEvent, DragEvent, FormEvent, useCallback, useEffect, useRef, useState } from "react";
-import { formatCode, spaceCodeSchema } from "@/src/lib/code";
-import { FILE_TYPES } from "@/src/lib/files";
+import { formatCode, isValidSpaceCode } from "@/src/lib/code";
+import { copyText } from "@/src/lib/clipboard";
+import { FILE_TYPES } from "@/src/lib/file-types";
 
 type FileRecord = {
   id: string;
@@ -64,6 +65,7 @@ async function responseJson(response: Response) {
 
 export function SpaceClient({ code }: { code: string }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const uploadingRef = useRef(false);
   const [space, setSpace] = useState<SpaceRecord | null>(null);
   const [files, setFiles] = useState<FileRecord[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
@@ -79,7 +81,7 @@ export function SpaceClient({ code }: { code: string }) {
   const [previews, setPreviews] = useState<Record<string, string>>({});
   const [reporting, setReporting] = useState("");
 
-  const validCode = spaceCodeSchema.safeParse(code).success;
+  const validCode = isValidSpaceCode(code);
 
   const loadFiles = useCallback(async (nextCursor?: string | null) => {
     const suffix = nextCursor ? `&cursor=${encodeURIComponent(nextCursor)}` : "";
@@ -122,7 +124,7 @@ export function SpaceClient({ code }: { code: string }) {
 
   async function copyCode() {
     try {
-      await navigator.clipboard.writeText(code);
+      await copyText(code);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 2000);
     } catch {
@@ -132,11 +134,12 @@ export function SpaceClient({ code }: { code: string }) {
 
   async function uploadFiles(selected: FileList | File[]) {
     const selectedFiles = Array.from(selected);
-    if (!selectedFiles.length || uploading) return;
+    if (!selectedFiles.length || uploadingRef.current) return;
     if (selectedFiles.length > 5) {
       setError("Choose no more than 5 files at a time.");
       return;
     }
+    uploadingRef.current = true;
     setError("");
     setUploading(true);
     setUploads(selectedFiles.map((file) => ({ name: file.name, progress: 0, status: "uploading" })));
@@ -193,6 +196,7 @@ export function SpaceClient({ code }: { code: string }) {
         ),
       );
     } finally {
+      uploadingRef.current = false;
       setUploading(false);
       if (inputRef.current) inputRef.current.value = "";
     }

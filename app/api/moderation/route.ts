@@ -1,7 +1,9 @@
 import { z } from "zod";
-import { getVisibility, spaceCodeSchema } from "@/src/lib/code";
-import { enforceRateLimit, getSpace, jsonError, jsonNoStore, matchesSecret } from "@/src/lib/http";
+import { getVisibility } from "@/src/lib/code";
+import { spaceCodeSchema } from "@/src/lib/validation";
+import { enforceRateLimit, getSpace, jsonError, jsonNoStore, matchesSecret, readJsonBody } from "@/src/lib/http";
 import { getSupabase, STORAGE_BUCKET } from "@/src/lib/supabase";
+import { queueStorageCleanup } from "@/src/lib/storage-cleanup";
 
 export const runtime = "nodejs";
 
@@ -20,16 +22,12 @@ export async function POST(request: Request) {
     if (!matchesSecret(token, process.env.MODERATION_TOKEN)) {
       return jsonError("Not authorized.", 401);
     }
-    let payload: unknown;
-    try {
-      payload = await request.json();
-    } catch {
-      return jsonError("Moderation request is invalid.", 400);
-    }
-    const parsed = moderationSchema.safeParse(payload);
+    const body = await readJsonBody(request, 4096);
+    if (!body.ok) return jsonError(body.tooLarge ? "Moderation request is too large." : "Moderation request is invalid.", body.tooLarge ? 413 : 400);
+    const parsed = moderationSchema.safeParse(body.value);
     if (!parsed.success) return jsonError("Moderation request is invalid.", 400);
     const { code, action, fileId } = parsed.data;
-    const space = await getSpace(code);
+    const space = await getSpace(code, false, true);
     if (!space) return jsonError("This space is unavailable.", 404);
     const supabase = getSupabase();
 
@@ -50,6 +48,9 @@ export async function POST(request: Request) {
       .eq("space_id", space.id)
       .maybeSingle();
     if (!file) return jsonError("This file is unavailable.", 404);
+    if (!(await queueStorageCleanup(supabase, [file.storage_key]))) {
+      return jsonError("The file could not be deleted.", 503);
+    }
     const { error: storageError } = await supabase.storage
       .from(STORAGE_BUCKET)
       .remove([file.storage_key]);
