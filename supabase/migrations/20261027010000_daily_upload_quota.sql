@@ -6,6 +6,8 @@ create table public.daily_upload_usage (
   primary key (ip_hash, day)
 );
 
+create index daily_upload_usage_day_idx on public.daily_upload_usage (day);
+
 alter table public.daily_upload_usage enable row level security;
 revoke all on public.daily_upload_usage from public, anon, authenticated;
 grant all on public.daily_upload_usage to service_role;

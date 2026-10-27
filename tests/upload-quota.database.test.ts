@@ -187,6 +187,17 @@ test("persistent daily upload quota in PostgreSQL", { skip: !databaseUrl }, asyn
       where storage_key like '${spaces[0]}/%' and storage_provider = 'r2'`)) > 0, true);
   });
 
+  await t.test("pruning historical ledger days cannot reset today's usage", async () => {
+    const ip = freshIp();
+    await seed(ip, 500_000_000);
+    await sql(`insert into public.daily_upload_usage (ip_hash, day, uploaded_bytes)
+      values ('${ip}', ${today} - 3, 500000000);
+      delete from public.daily_upload_usage where ip_hash = '${ip}' and day < ${today} - 2;`);
+    assert.equal(await usage(ip), 500_000_000);
+    assert.equal((await reserve(ip, 1)).error, "daily_upload_limit");
+    assert.equal(Number(await sql(`select count(*) from public.daily_upload_usage where ip_hash = '${ip}'`)), 1);
+  });
+
   await t.test("public database roles cannot read usage or reserve uploads", async () => {
     for (const role of ["anon", "authenticated"]) {
       await assert.rejects(sql(`set role ${role}; select * from public.daily_upload_usage`), /permission denied/);
