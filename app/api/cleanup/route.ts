@@ -25,7 +25,12 @@ export async function GET(request: Request) {
       .from("private_generation_requests")
       .delete()
       .lt("created_at", oldRequests);
-    if (limitsError || requestsError) return jsonError("Cleanup could not be completed.", 503);
+    const oldQuotaDay = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const { error: quotaError } = await supabase
+      .from("daily_upload_usage")
+      .delete()
+      .lt("day", oldQuotaDay);
+    if (limitsError || requestsError || quotaError) return jsonError("Cleanup could not be completed.", 503);
     return jsonNoStore(result, result.hasMore || result.failedBatches ? 503 : 200);
   } catch {
     return jsonError("Cleanup could not be completed.", 503);

@@ -26,7 +26,7 @@ export async function POST(
     const supabase = getSupabase();
     const { data: file, error: fileError } = await supabase
       .from("files")
-      .select("id,storage_key,size_bytes,content_type,status,original_name,created_at,storage_provider")
+      .select("id,storage_key,size_bytes,content_type,status,original_name,created_at,storage_provider,upload_ip_hash,upload_reservation_expires_at")
       .eq("id", id)
       .eq("space_id", space.id)
       .gt("created_at", activeFileCutoff())
@@ -35,8 +35,12 @@ export async function POST(
       return jsonError("The upload could not be completed.", 404);
     }
     if (file.status === "ready") return jsonNoStore({ completed: true });
-    if (file.storage_provider !== "r2") {
+    if (file.storage_provider !== "r2" || !file.upload_ip_hash) {
       return jsonError("Please cancel this older upload and upload the file again.", 409);
+    }
+    if (Date.parse(file.upload_reservation_expires_at) <= Date.now()) {
+      await supabase.from("files").delete().eq("id", id).eq("status", "pending");
+      return jsonError("The upload reservation expired. Please upload the file again.", 410);
     }
     const { bytes, size, contentType } = await readUploadedHeader(file.storage_key);
     const ext = file.original_name.split(".").pop()?.toLowerCase() ?? "";
@@ -55,6 +59,10 @@ export async function POST(
       .eq("status", "pending")
       .gt("created_at", activeFileCutoff())
       .select("id");
+    if (updateError?.code === "P0001" && updateError.message.includes("upload_reservation_expired")) {
+      await supabase.from("files").delete().eq("id", id).eq("status", "pending");
+      return jsonError("The upload reservation expired. Please upload the file again.", 410);
+    }
     if (updateError) return jsonError("The upload could not be completed.", 503);
     if (!updated?.length) return jsonError("The upload is no longer available.", 404);
     return jsonNoStore({ completed: true });

@@ -5,6 +5,7 @@ import { formatCode, isValidSpaceCode } from "@/src/lib/code";
 import { copyText } from "@/src/lib/clipboard";
 import { FILE_TYPES } from "@/src/lib/file-types";
 import { MediaPreview } from "@/src/components/media-preview";
+import { uploadQuotaMessage, type UploadQuota } from "@/src/lib/upload-quota";
 
 type FileRecord = {
   id: string;
@@ -60,8 +61,18 @@ function xhrUpload(
 
 async function responseJson(response: Response) {
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error ?? "Something went wrong. Please try again.");
+  if (!response.ok) throw new Error(uploadErrorMessage(payload));
   return payload;
+}
+
+function uploadErrorMessage(payload: { error?: string; reason?: string; quota?: UploadQuota }) {
+  if (payload.reason === "daily_upload_limit" && payload.quota) {
+    const localReset = new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium", timeStyle: "long",
+    }).format(new Date(payload.quota.resetAt));
+    return uploadQuotaMessage(payload.quota, `${localReset} (midnight UTC)`);
+  }
+  return payload.error ?? "Something went wrong. Please try again.";
 }
 
 export function SpaceClient({ code }: { code: string }) {
@@ -151,9 +162,19 @@ export function SpaceClient({ code }: { code: string }) {
         }),
         cache: "no-store",
       });
-      const { uploads: reservations } = await responseJson(start);
+      const payload = await start.json();
+      if (!start.ok && !Array.isArray(payload.rejected)) throw new Error(uploadErrorMessage(payload));
+      const { uploads: reservations, rejected = [] } = payload;
+      for (const rejection of rejected) {
+        setUploads((current) => current.map((upload, index) =>
+          index === rejection.index
+            ? { ...upload, status: "failed", error: uploadErrorMessage(rejection) }
+            : upload
+        ));
+      }
       const results = await Promise.allSettled(
-        reservations.map(async (reservation: { id: string; uploadUrl: string; contentType: string }, index: number) => {
+        reservations.map(async (reservation: { id: string; uploadUrl: string; contentType: string; index: number }) => {
+          const index = reservation.index;
           try {
             await xhrUpload(reservation.uploadUrl, selectedFiles[index], reservation.contentType, (progress) => {
               setUploads((current) => current.map((upload, item) =>
@@ -182,7 +203,7 @@ export function SpaceClient({ code }: { code: string }) {
           }
         }),
       );
-      if (results.some((result) => result.status === "rejected")) {
+      if (rejected.length || results.some((result) => result.status === "rejected")) {
         setError("Some files could not be uploaded. Failed files can be selected again.");
       }
       await loadFiles();
@@ -320,7 +341,7 @@ export function SpaceClient({ code }: { code: string }) {
         <span className="upload-symbol" aria-hidden="true">↑</span>
         <div>
           <h2>{uploading ? "Uploading your files…" : "Drop files here"}</h2>
-          <p>Images, videos, PDFs, and documents · up to 50 MB each</p>
+          <p>Images, videos, PDFs, and documents · up to 50 MiB each · 500 MB per IP per UTC day</p>
         </div>
         <button className="button button-primary" type="button" disabled={uploading} onClick={() => inputRef.current?.click()}>
           Choose files
@@ -333,7 +354,7 @@ export function SpaceClient({ code }: { code: string }) {
             <div className="progress-row" key={`${upload.name}-${index}`}>
               <span className={`progress-state ${upload.status}`}>{upload.status === "done" ? "✓" : upload.status === "failed" ? "!" : "↑"}</span>
               <div className="progress-copy">
-                <div><strong>{upload.name}</strong><span>{upload.error ?? (upload.status === "done" ? "Uploaded" : `${upload.progress}%`)}</span></div>
+                <div className={upload.error ? "has-error" : undefined}><strong>{upload.name}</strong><span>{upload.error ?? (upload.status === "done" ? "Uploaded" : `${upload.progress}%`)}</span></div>
                 <progress value={upload.status === "done" ? 100 : upload.progress} max="100" aria-label={`${upload.name} upload progress`} />
               </div>
             </div>

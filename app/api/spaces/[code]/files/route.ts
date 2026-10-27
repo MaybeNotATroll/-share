@@ -26,6 +26,8 @@ import {
 import { getSupabase } from "@/src/lib/supabase";
 import { createUploadUrl, getR2Client } from "@/src/lib/storage";
 import { activeFileCutoff } from "@/src/lib/file-lifetime";
+import { clientIpKey } from "@/src/lib/client-ip";
+import { uploadQuotaMessage, type UploadQuota } from "@/src/lib/upload-quota";
 
 export const runtime = "nodejs";
 
@@ -139,10 +141,12 @@ export async function POST(
     if (!space) return jsonError("This space is unavailable.", 404);
 
     const supabase = getSupabase();
-    const reservations: { id: string; storageKey: string; uploadUrl: string }[] = [];
-    for (const file of prepared) {
+    const ipHash = clientIpKey(request, "daily-upload");
+    const reservations: { id: string; storageKey: string; uploadUrl: string; index: number }[] = [];
+    const rejected: { index: number; error: string; quota: UploadQuota; reason: string }[] = [];
+    for (const [index, file] of prepared.entries()) {
       const storageKey = `${space.id}/${randomUUID()}`;
-      const { data: fileId, error: reserveError } = await supabase.rpc("reserve_r2_upload", {
+      const { data: result, error: reserveError } = await supabase.rpc("reserve_r2_upload", {
         p_space_id: space.id,
         p_original_name: file.name,
         p_storage_key: storageKey,
@@ -151,10 +155,24 @@ export async function POST(
         p_max_file_bytes: maxFileBytes(),
         p_max_space_bytes: maxSpaceBytes(),
         p_max_files_per_space: maxFilesPerSpace(),
+        p_ip_hash: ipHash,
       });
+      if (!reserveError && result?.error && result?.quota) {
+        const quota = result.quota as UploadQuota;
+        rejected.push({
+          index,
+          reason: result.error,
+          quota,
+          error: result.error === "daily_upload_limit"
+            ? uploadQuotaMessage(quota)
+            : "Other uploads are using your remaining daily allowance. Wait for them to finish or cancel, or retry after their ten-minute reservations expire.",
+        });
+        continue;
+      }
+      const fileId = result?.id;
       if (reserveError || typeof fileId !== "string") {
         for (const reserved of reservations) {
-          await supabase.from("files").delete().eq("id", reserved.id);
+          await supabase.from("files").delete().eq("id", reserved.id).eq("status", "pending");
         }
         if (reserveError && !["54000", "22023"].includes(reserveError.code)) {
           throw databaseError(reserveError, "An upload could not be reserved.");
@@ -168,23 +186,29 @@ export async function POST(
 
       try {
         const uploadUrl = await createUploadUrl(storageKey, file.input.size, file.mime);
-        reservations.push({ id: fileId, storageKey, uploadUrl });
+        reservations.push({ id: fileId, storageKey, uploadUrl, index });
       } catch {
-        await supabase.from("files").delete().eq("id", fileId);
+        await supabase.from("files").delete().eq("id", fileId).eq("status", "pending");
         for (const reserved of reservations) {
-          await supabase.from("files").delete().eq("id", reserved.id);
+          await supabase.from("files").delete().eq("id", reserved.id).eq("status", "pending");
         }
         return jsonError("An upload could not be started. Please try again.", 503);
       }
     }
 
+    if (!reservations.length && rejected.length) {
+      return jsonNoStore({ ...rejected[0], rejected, uploads: [] },
+        rejected[0].reason === "daily_upload_limit" ? 413 : 409);
+    }
     return jsonNoStore({
-      uploads: reservations.map((reservation, index) => ({
+      rejected,
+      uploads: reservations.map((reservation) => ({
         id: reservation.id,
+        index: reservation.index,
         uploadUrl: reservation.uploadUrl,
-        name: prepared[index].name,
-        contentType: prepared[index].mime,
-        size: prepared[index].input.size,
+        name: prepared[reservation.index].name,
+        contentType: prepared[reservation.index].mime,
+        size: prepared[reservation.index].input.size,
         headers: { "If-None-Match": "*" },
       })),
     }, 201);

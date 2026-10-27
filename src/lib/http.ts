@@ -1,8 +1,9 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { getVisibility } from "./code";
 import { ServiceSetupError } from "./service-setup-error";
 import { getSupabase } from "./supabase";
+import { clientIpKey } from "./client-ip";
 
 export async function readJsonBody(
   request: Request,
@@ -68,14 +69,7 @@ export async function enforceRateLimit(
   limit: number,
   seconds: number,
 ): Promise<boolean> {
-  const ip =
-    request.headers.get("x-real-ip") ??
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
-    "unknown";
-  const secret =
-    process.env.RATE_LIMIT_SECRET ?? process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
-  if (Buffer.byteLength(secret) < 32) throw new ServiceSetupError("Rate limiting is not configured.");
-  const key = createHmac("sha256", secret).update(`${action}:${ip}`).digest("hex");
+  const key = clientIpKey(request, action);
   const { data, error } = await getSupabase().rpc("check_rate_limit", {
     p_key: key,
     p_limit: limit,
