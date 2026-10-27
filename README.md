@@ -7,6 +7,7 @@ Numa is a number-based file-sharing app built with Next.js App Router, Supabase 
 - Enter any numeric string of 1–100 digits to open the private space for that exact number. Leading zeroes are preserved. A space is stored the first time a file is posted to it.
 - Every space is private: its files can only be listed, previewed, downloaded, or added by someone who supplies the exact number. No listing of spaces exists.
 - Visitors can view and post images, videos, and files, but cannot delete anything. Only the operator's server-side moderation token can remove content or block a space.
+- Images appear automatically and videos preload with playback controls as files are listed, including after uploads and “Load more”. Videos do not autoplay; browsers may limit preloading. Failed previews offer a retry button, which requests a fresh signed URL. PDF previews remain opt-in.
 - “Generate a private number” draws a fully random 100-digit code with `crypto.randomInt`, checks whether anything has been posted under it, and draws again if so. The unused code is displayed with a copy button.
 - Upload objects are private, use random object keys, and are served through short-lived signed URLs after server-side space/file authorization.
 

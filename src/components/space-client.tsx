@@ -4,6 +4,7 @@ import { ChangeEvent, DragEvent, FormEvent, useCallback, useEffect, useRef, useS
 import { formatCode, isValidSpaceCode } from "@/src/lib/code";
 import { copyText } from "@/src/lib/clipboard";
 import { FILE_TYPES } from "@/src/lib/file-types";
+import { MediaPreview } from "@/src/components/media-preview";
 
 type FileRecord = {
   id: string;
@@ -358,11 +359,10 @@ export function SpaceClient({ code }: { code: string }) {
               const isPdf = file.contentType === "application/pdf";
               return (
                 <article className="file-card" key={file.id}>
-                  {previews[file.id] && (
+                  {(isImage || isVideo) && <MediaPreview key={`${code}-${file.id}`} code={code} file={file} />}
+                  {isPdf && previews[file.id] && (
                     <div className="file-preview">
-                      {isImage && <img src={previews[file.id]} alt={`Preview of ${file.name}`} loading="lazy" />}
-                      {isVideo && <video src={previews[file.id]} controls preload="metadata" aria-label={`Preview of ${file.name}`} />}
-                      {isPdf && <iframe src={previews[file.id]} title={`PDF preview: ${file.name}`} sandbox="allow-same-origin" />}
+                      <iframe src={previews[file.id]} title={`PDF preview: ${file.name}`} sandbox="allow-same-origin" />
                     </div>
                   )}
                   <div className="file-card-body">
@@ -373,7 +373,7 @@ export function SpaceClient({ code }: { code: string }) {
                     </div>
                   </div>
                   <div className="file-actions">
-                    {(isImage || isVideo || isPdf) && (
+                    {isPdf && (
                       <button className="text-button" type="button" onClick={() => void openPreview(file)}>
                         {previews[file.id] ? "Hide preview" : "Preview"}
                       </button>
