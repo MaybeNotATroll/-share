@@ -3,6 +3,10 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   async headers() {
+    const accountId = process.env.R2_ACCOUNT_ID;
+    const r2Origin = accountId && /^[a-f0-9]{32}$/i.test(accountId)
+      ? ` https://${accountId}.r2.cloudflarestorage.com`
+      : "";
     return [
       {
         source: "/space/:path*",
@@ -23,7 +27,7 @@ const nextConfig: NextConfig = {
           {
             key: "Content-Security-Policy",
             value:
-              "default-src 'self'; script-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.supabase.co; media-src 'self' blob: https://*.supabase.co; frame-src https://*.supabase.co; connect-src 'self' https://*.supabase.co; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
+              `default-src 'self'; script-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.supabase.co${r2Origin}; media-src 'self' blob: https://*.supabase.co${r2Origin}; frame-src 'self' https://*.supabase.co${r2Origin}; connect-src 'self' https://*.supabase.co${r2Origin}; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'`,
           },
         ],
       },

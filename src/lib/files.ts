@@ -108,3 +108,13 @@ export function maxFilesPerSpace(): number {
   }
   return configured;
 }
+
+export function uploadRateLimit(): number {
+  const configured = Number(process.env.UPLOAD_RATE_LIMIT ?? 12);
+  return Number.isSafeInteger(configured) && configured >= 1 && configured <= 10_000 ? configured : 12;
+}
+
+export function uploadRateWindowSeconds(): number {
+  const configured = Number(process.env.UPLOAD_RATE_WINDOW_SECONDS ?? 60);
+  return Number.isSafeInteger(configured) && configured >= 1 && configured <= 86_400 ? configured : 60;
+}

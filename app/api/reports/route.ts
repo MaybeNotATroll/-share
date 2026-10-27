@@ -2,6 +2,7 @@ import { z } from "zod";
 import { spaceCodeSchema } from "@/src/lib/validation";
 import { enforceRateLimit, getSpace, jsonError, jsonNoStore, readJsonBody } from "@/src/lib/http";
 import { getSupabase } from "@/src/lib/supabase";
+import { activeFileCutoff } from "@/src/lib/file-lifetime";
 
 export const runtime = "nodejs";
 
@@ -30,6 +31,7 @@ export async function POST(request: Request) {
       .eq("id", fileId)
       .eq("space_id", space.id)
       .eq("status", "ready")
+      .gt("created_at", activeFileCutoff())
       .maybeSingle();
     if (!file) return jsonError("This file is unavailable.", 404);
     const { error } = await supabase.from("reports").insert({

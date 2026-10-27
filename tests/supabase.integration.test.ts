@@ -30,10 +30,16 @@ test("configured app opens numbered private spaces, generates unused codes, and 
   const reservation = (await prepared.json()).uploads[0];
   const uploaded = await fetch(reservation.uploadUrl, {
     method: "PUT",
-    headers: { "Content-Type": "text/plain", "x-upsert": "false" },
+    headers: { "Content-Type": "text/plain", "If-None-Match": "*" },
     body: new Blob(["hello"], { type: "text/plain" }),
   });
   assert.ok(uploaded.ok);
+  const replay = await fetch(reservation.uploadUrl, {
+    method: "PUT",
+    headers: { "Content-Type": "text/plain", "If-None-Match": "*" },
+    body: new Blob(["other"], { type: "text/plain" }),
+  });
+  assert.equal(replay.status, 412);
 
   const completed = await fetch(`${root}/api/spaces/${code}/files/${reservation.id}/complete`, {
     method: "POST",

@@ -1,8 +1,8 @@
 import { z } from "zod";
 import { spaceCodeSchema } from "@/src/lib/validation";
 import { enforceRateLimit, getSpace, jsonError, jsonNoStore, matchesSecret, readJsonBody } from "@/src/lib/http";
-import { getSupabase, STORAGE_BUCKET } from "@/src/lib/supabase";
-import { queueStorageCleanup } from "@/src/lib/storage-cleanup";
+import { getSupabase } from "@/src/lib/supabase";
+import { removeObjects } from "@/src/lib/storage";
 
 export const runtime = "nodejs";
 
@@ -42,20 +42,14 @@ export async function POST(request: Request) {
     if (!fileId) return jsonError("Choose a file to delete.", 400);
     const { data: file } = await supabase
       .from("files")
-      .select("storage_key")
+      .select("storage_key,storage_provider")
       .eq("id", fileId)
       .eq("space_id", space.id)
       .maybeSingle();
     if (!file) return jsonError("This file is unavailable.", 404);
-    if (!(await queueStorageCleanup(supabase, [file.storage_key]))) {
-      return jsonError("The file could not be deleted.", 503);
-    }
-    const { error: storageError } = await supabase.storage
-      .from(STORAGE_BUCKET)
-      .remove([file.storage_key]);
-    if (storageError) return jsonError("The file could not be deleted.", 503);
     const { error } = await supabase.from("files").delete().eq("id", fileId);
     if (error) return jsonError("The file could not be deleted.", 503);
+    await removeObjects(file.storage_provider, [file.storage_key]);
     return jsonNoStore({ deleted: true });
   } catch {
     return jsonError("The moderation service is unavailable.", 503);

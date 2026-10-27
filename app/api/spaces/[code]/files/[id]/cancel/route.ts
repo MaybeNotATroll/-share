@@ -1,8 +1,9 @@
 import { z } from "zod";
 import { spaceCodeSchema } from "@/src/lib/validation";
 import { discardSmallRequestBody, enforceRateLimit, getSpace, jsonError, jsonNoStore } from "@/src/lib/http";
-import { getSupabase, STORAGE_BUCKET } from "@/src/lib/supabase";
-import { queueStorageCleanup } from "@/src/lib/storage-cleanup";
+import { getSupabase } from "@/src/lib/supabase";
+import { removeObjects } from "@/src/lib/storage";
+import { activeFileCutoff } from "@/src/lib/file-lifetime";
 
 export const runtime = "nodejs";
 
@@ -24,18 +25,17 @@ export async function POST(
     const supabase = getSupabase();
     const { data: file } = await supabase
       .from("files")
-      .select("storage_key")
+      .select("storage_key,storage_provider")
       .eq("id", id)
       .eq("space_id", space.id)
       .eq("status", "pending")
+      .gt("created_at", activeFileCutoff())
       .maybeSingle();
     if (file) {
-      if (!(await queueStorageCleanup(supabase, [file.storage_key]))) {
-        return jsonError("The upload could not be cancelled.", 503);
-      }
-      const { error: storageError } = await supabase.storage.from(STORAGE_BUCKET).remove([file.storage_key]);
-      if (storageError) return jsonError("The upload could not be cancelled.", 503);
-      await supabase.from("files").delete().eq("id", id).eq("status", "pending");
+      const { data: deleted, error } = await supabase.from("files").delete()
+        .eq("id", id).eq("status", "pending").select("id");
+      if (error) return jsonError("The upload could not be cancelled.", 503);
+      if (deleted?.length) await removeObjects(file.storage_provider, [file.storage_key]);
     }
     return jsonNoStore({ cancelled: true });
   } catch {
