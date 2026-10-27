@@ -15,6 +15,7 @@ import {
 } from "@/src/lib/files";
 import {
   enforceRateLimit,
+  databaseError,
   getOrCreateSpace,
   getSpace,
   jsonError,
@@ -141,7 +142,7 @@ export async function POST(
     const reservations: { id: string; storageKey: string; uploadUrl: string }[] = [];
     for (const file of prepared) {
       const storageKey = `${space.id}/${randomUUID()}`;
-      const { data: fileId, error: reserveError } = await supabase.rpc("reserve_upload", {
+      const { data: fileId, error: reserveError } = await supabase.rpc("reserve_r2_upload", {
         p_space_id: space.id,
         p_original_name: file.name,
         p_storage_key: storageKey,
@@ -154,6 +155,9 @@ export async function POST(
       if (reserveError || typeof fileId !== "string") {
         for (const reserved of reservations) {
           await supabase.from("files").delete().eq("id", reserved.id);
+        }
+        if (reserveError && !["54000", "22023"].includes(reserveError.code)) {
+          throw databaseError(reserveError, "An upload could not be reserved.");
         }
         const quota = reserveError?.code === "54000" || reserveError?.code === "22023";
         return jsonError(

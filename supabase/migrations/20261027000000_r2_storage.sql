@@ -1,15 +1,44 @@
--- Existing objects remain in Supabase; only new reservations use R2.
+-- Keep legacy writers safe during rollout; the new RPC explicitly selects R2.
 alter table public.files
   add column storage_provider text not null default 'supabase'
   check (storage_provider in ('supabase', 'r2'));
-alter table public.files alter column storage_provider set default 'r2';
 
 alter table public.storage_cleanup_queue
   add column storage_provider text not null default 'supabase'
   check (storage_provider in ('supabase', 'r2'));
-alter table public.storage_cleanup_queue alter column storage_provider set default 'r2';
 
 create index files_expiration_idx on public.files (created_at);
+
+create or replace function public.reserve_r2_upload(
+  p_space_id uuid,
+  p_original_name text,
+  p_storage_key text,
+  p_content_type text,
+  p_size_bytes bigint,
+  p_max_file_bytes bigint,
+  p_max_space_bytes bigint,
+  p_max_files_per_space integer
+) returns uuid
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_file_id uuid;
+begin
+  v_file_id := public.reserve_upload(
+    p_space_id, p_original_name, p_storage_key, p_content_type,
+    p_size_bytes, p_max_file_bytes, p_max_space_bytes, p_max_files_per_space
+  );
+  update public.files set storage_provider = 'r2' where id = v_file_id;
+  return v_file_id;
+end;
+$$;
+
+revoke all on function public.reserve_r2_upload(uuid, text, text, text, bigint, bigint, bigint, integer)
+  from public, anon, authenticated;
+grant execute on function public.reserve_r2_upload(uuid, text, text, text, bigint, bigint, bigint, integer)
+  to service_role;
 
 -- The tombstone and quota release commit with metadata deletion. Never lose
 -- an object key on a crash between database deletion and object deletion.
@@ -31,7 +60,8 @@ begin
     end
   )
   on conflict (storage_key) do update
-    set cleanup_after = greatest(
+    set storage_provider = excluded.storage_provider,
+    cleanup_after = greatest(
       public.storage_cleanup_queue.cleanup_after, excluded.cleanup_after
     );
   return old;
