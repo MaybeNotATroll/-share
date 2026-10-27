@@ -42,7 +42,7 @@ export async function GET(
 
     const seconds = fileAccessSeconds(file.created_at, 60, Date.now(), file.expires_at);
     if (seconds < 1) return jsonError("This file is unavailable.", 404);
-    const url = await downloadLocation(file, code, id, mode === "preview", seconds, createDownloadUrl);
+    const url = await downloadLocation(file, code, id, mode === "preview", seconds, request.url, createDownloadUrl);
     return jsonNoStore({ url, expiresIn: seconds });
   } catch {
     return jsonError("The service is temporarily unavailable. Please try again.", 503);

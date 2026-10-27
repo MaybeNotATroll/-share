@@ -22,11 +22,12 @@ test("managed download locations never invoke a presigner; legacy downloads reta
     owner_token_hash: "a".repeat(64), storage_provider: "r2" as const,
     storage_key: "private/key", original_name: "test.txt",
   };
-  assert.equal(await downloadLocation(file, "123", id, true, 60, async () => assert.fail("must not sign")),
-    `/api/spaces/123/files/${id}/content?mode=preview`);
-  assert.equal(await downloadLocation(file, "123", id, false, 60, async () => assert.fail("must not sign")),
-    `/api/spaces/123/files/${id}/content?mode=download`);
+  assert.equal(await downloadLocation(file, "123", id, true, 60, "https://numa.example/space/123", async () => assert.fail("must not sign")),
+    `https://numa.example/api/spaces/123/files/${id}/content?mode=preview`);
+  assert.equal(await downloadLocation(file, "123", id, false, 60, "https://numa.example/space/123", async () => assert.fail("must not sign")),
+    `https://numa.example/api/spaces/123/files/${id}/content?mode=download`);
   assert.equal(await downloadLocation({ ...file, owner_token_hash: null }, "123", id, false, 17,
+    "https://numa.example/space/123",
     async (provider, key, name, attachment, seconds) => {
       assert.deepEqual([provider, key, name, attachment, seconds], ["r2", "private/key", "test.txt", true, 17]);
       return "https://legacy-signed.example";

@@ -50,6 +50,16 @@ test("owner expiration migration, quota and durable revocation in disposable Pos
       assert.equal((await usage()).reservedBytes, 0);
     });
 
+    await t.test("direct managed inserts cannot exceed the database's 24-hour retention ceiling", async () => {
+      const key = `${spaces[0]}/${randomUUID()}`;
+      keys.push(key);
+      await assert.rejects(sql(`insert into public.files
+        (space_id,original_name,storage_key,content_type,size_bytes,storage_provider,owner_token_hash,expires_at)
+        values ('${spaces[0]}','direct.txt','${key}','text/plain',1,'r2','${owner}',
+          clock_timestamp()+interval '25 hours')`), /files_managed_retention_max/);
+      assert.equal(Number(await sql(`select count(*) from public.files where storage_key='${key}'`)), 0);
+    });
+
     const first = await reserve();
     await t.test("only hash is stored; short expiration uses created time; reruns never extend it", async () => {
       const file = JSON.parse(await sql(`select json_build_object('owner',owner_token_hash,

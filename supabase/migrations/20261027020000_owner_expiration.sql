@@ -6,6 +6,22 @@ update public.files set expires_at = created_at + interval '24 hours' where expi
 alter table public.files alter column expires_at set default (now() + interval '24 hours');
 alter table public.files alter column expires_at set not null;
 
+update public.files set expires_at = created_at + interval '24 hours'
+  where owner_token_hash is not null and expires_at > created_at + interval '24 hours';
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conrelid = 'public.files'::regclass
+      and conname = 'files_managed_retention_max'
+  ) then
+    -- Legacy service-role writers/fixtures may deliberately backdate created_at.
+    -- Managed rows also enforce the retention ceiling outside the reservation RPC.
+    alter table public.files add constraint files_managed_retention_max
+      check (owner_token_hash is null or expires_at <= created_at + interval '24 hours');
+  end if;
+end;
+$$;
+
 create index if not exists files_expires_at_idx on public.files (expires_at);
 create index if not exists files_owner_created_idx
   on public.files (owner_token_hash, created_at desc, id desc) where status = 'ready';

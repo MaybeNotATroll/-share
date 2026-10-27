@@ -400,7 +400,7 @@ export function SpaceClient({ code }: { code: string }) {
                   {(isImage || isVideo) && <MediaPreview key={`${code}-${file.id}`} code={code} file={file} />}
                   {isPdf && previews[file.id] && (
                     <div className="file-preview">
-                      <iframe src={previews[file.id]} title={`PDF preview: ${file.name}`} sandbox="allow-same-origin" />
+                      <iframe src={previews[file.id]} title={`PDF preview: ${file.name}`} sandbox={previews[file.id].startsWith("/api/spaces/") || previews[file.id].startsWith(`${window.location.origin}/api/spaces/`) ? undefined : "allow-same-origin"} />
                     </div>
                   )}
                   <div className="file-card-body">

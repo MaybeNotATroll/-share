@@ -73,6 +73,6 @@ test("configured app opens numbered private spaces, generates unused codes, and 
   });
   assert.equal(downloadInfo.status, 200);
   const signedDownload = await downloadInfo.json();
-  const downloaded = await fetch(new URL(signedDownload.url, root), { cache: "no-store" });
+  const downloaded = await fetch(signedDownload.url, { cache: "no-store" });
   assert.equal(await downloaded.text(), "hello");
 });
