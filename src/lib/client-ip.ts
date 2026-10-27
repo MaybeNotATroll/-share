@@ -1,3 +1,4 @@
+import "server-only";
 import { createHmac } from "node:crypto";
 import { isIP } from "node:net";
 import { ServiceSetupError } from "./service-setup-error.ts";
