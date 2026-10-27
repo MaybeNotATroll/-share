@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import test from "node:test";
 import type { UploadQuota } from "../src/lib/upload-quota.ts";
@@ -225,5 +226,29 @@ test("persistent daily upload quota in PostgreSQL", { skip: !databaseUrl }, asyn
     }
     assert.equal(await sql(`select to_regprocedure(
       'public.reserve_r2_upload(uuid,text,text,text,bigint,bigint,bigint,integer)') is null`), "t");
+  });
+
+  await t.test("reapplying the recovery migration preserves files, usage, and exactly-once accounting", async () => {
+    const ip = freshIp();
+    const completed = await reserve(ip, 123);
+    await finish(completed.id!);
+    const pending = await reserve(ip, 456);
+    const snapshot = await sql(`select row_to_json(f) from public.files f
+      where id in ('${completed.id}', '${pending.id}') order by id`);
+    const migration = await readFile(new URL(
+      "../supabase/migrations/20261027010000_daily_upload_quota.sql", import.meta.url,
+    ), "utf8");
+    await sql(migration);
+    await sql(migration);
+    assert.equal(await sql(`select row_to_json(f) from public.files f
+      where id in ('${completed.id}', '${pending.id}') order by id`), snapshot);
+    assert.equal(await usage(ip), 123);
+    assert.equal(await sql(`select count(*) from pg_trigger
+      where tgrelid = 'public.files'::regclass and tgname = 'files_account_completed_upload'`), "1");
+    assert.equal(await sql(`select count(*) from pg_proc
+      where pronamespace = 'public'::regnamespace and proname = 'reserve_r2_upload'`), "1");
+    await Promise.all([finish(pending.id!), finish(pending.id!)]);
+    await sql(`update public.files set status = 'ready' where id = '${completed.id}'`);
+    assert.equal(await usage(ip), 579);
   });
 });

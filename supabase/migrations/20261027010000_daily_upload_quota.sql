@@ -1,4 +1,9 @@
-create table public.daily_upload_usage (
+-- Apply the complete file, not selected statements, including on SQL Editor retry.
+begin;
+
+lock table public.files in access exclusive mode;
+
+create table if not exists public.daily_upload_usage (
   ip_hash text not null check (ip_hash ~ '^[a-f0-9]{64}$'),
   day date not null,
   uploaded_bytes bigint not null default 0
@@ -6,24 +11,24 @@ create table public.daily_upload_usage (
   primary key (ip_hash, day)
 );
 
-create index daily_upload_usage_day_idx on public.daily_upload_usage (day);
+create index if not exists daily_upload_usage_day_idx on public.daily_upload_usage (day);
 
 alter table public.daily_upload_usage enable row level security;
 revoke all on public.daily_upload_usage from public, anon, authenticated;
 grant all on public.daily_upload_usage to service_role;
 
 alter table public.files
-  add column upload_ip_hash text check (upload_ip_hash ~ '^[a-f0-9]{64}$'),
-  add column upload_reservation_expires_at timestamptz;
+  add column if not exists upload_ip_hash text check (upload_ip_hash ~ '^[a-f0-9]{64}$'),
+  add column if not exists upload_reservation_expires_at timestamptz;
 
-create index files_active_ip_reservations_idx
+create index if not exists files_active_ip_reservations_idx
   on public.files (upload_ip_hash, upload_reservation_expires_at)
   where status = 'pending';
 
 -- Old application instances must fail closed instead of issuing unmetered URLs.
-drop function public.reserve_r2_upload(uuid, text, text, text, bigint, bigint, bigint, integer);
+drop function if exists public.reserve_r2_upload(uuid, text, text, text, bigint, bigint, bigint, integer);
 
-create function public.reserve_r2_upload(
+create or replace function public.reserve_r2_upload(
   p_space_id uuid,
   p_original_name text,
   p_storage_key text,
@@ -99,7 +104,7 @@ grant execute on function public.reserve_r2_upload(uuid, text, text, text, bigin
 
 -- Validation happens in the API before this transition. The final usage and
 -- publication commit together; retries, deletion, and moderation cannot refund it.
-create function public.account_completed_upload()
+create or replace function public.account_completed_upload()
 returns trigger
 language plpgsql
 security definer
@@ -133,6 +138,10 @@ end;
 $$;
 
 revoke all on function public.account_completed_upload() from public, anon, authenticated;
+drop trigger if exists files_account_completed_upload on public.files;
 create trigger files_account_completed_upload
   before update of status on public.files
   for each row execute function public.account_completed_upload();
+
+notify pgrst, 'reload schema';
+commit;

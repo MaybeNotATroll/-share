@@ -29,6 +29,34 @@ The initial migration creates the schema, constraints, indexes, quota/rate-limit
 
 The daily-quota migration adds a private usage ledger, expiring reservations, and transactional completion accounting. **Pause uploads during rollout**, finish or cancel pending uploads first, apply the migration, and deploy this application version together. The old R2 RPC signature is removed so old application instances fail closed; drain or disable old instances rather than rolling back to unmetered uploads. Existing ready files remain untouched. Unfinished pre-migration uploads have no attributable IP and must be cancelled/retried; they cannot be completed by this version. Historical successful uploads cannot be backfilled by IP because their IPs were not stored; accounting starts at rollout.
 
+### Recovering a failed daily-quota migration
+
+If the quota table, IP column, and completion trigger are absent but the old R2 RPC still exists, do **not** rerun the initial or R2 migrations and do not drop `files`. Pause uploads and run the **entire corrected** `supabase/migrations/20261027010000_daily_upload_quota.sql` file in the intended project's Supabase SQL Editor, from `begin;` through `commit;`. This file is also safe to rerun after a successful application or a partially applied quota rollout: it retains existing file rows and daily usage, removes only the obsolete eight-argument RPC, replaces the nine-argument RPC and accounting function, and installs a single completion trigger. It takes an exclusive metadata lock and applies atomically; any error rolls the transaction back (run `rollback;` if the editor leaves the session in an aborted transaction). It also requests a PostgREST schema-cache reload.
+
+The original file at commit `78b0499` has 138 lines and executes successfully on PostgreSQL 16. An error at line 278 cannot be attributed to that file alone; retain the exact submitted SQL to diagnose a concatenated, edited, or selected SQL Editor statement rather than guessing at a missing parenthesis.
+
+After applying, run this read-only verification:
+
+```sql
+select
+  to_regclass('public.daily_upload_usage') is not null as quota_table,
+  exists (select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'files'
+      and column_name = 'upload_ip_hash') as ip_column,
+  exists (select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'files'
+      and column_name = 'upload_reservation_expires_at') as expiry_column,
+  to_regprocedure('public.reserve_r2_upload(uuid,text,text,text,bigint,bigint,bigint,integer,text)')
+    is not null as quota_rpc,
+  to_regprocedure('public.reserve_r2_upload(uuid,text,text,text,bigint,bigint,bigint,integer)')
+    is null as old_rpc_removed,
+  (select count(*) = 1 from pg_trigger
+    where tgrelid = 'public.files'::regclass
+      and tgname = 'files_account_completed_upload' and tgenabled = 'O') as accounting_trigger;
+```
+
+All six values must be `true`. Redeploy the corrected application with the production environment variables below configured privately in Vercel. A schema migration cannot configure missing Supabase/R2 credentials or the rate-limit secret. Before declaring production repaired, verify a small upload through reservation → R2 PUT → completion → download on the deployed site; retry completion and confirm the ledger increased only once by the exact file size. Confirm existing unexpired Supabase-backed files remain downloadable. Do not share credentials, signed URLs, IP hashes, or private space codes in diagnostic output.
+
 ### Environment variables
 
 | Variable | Required | Purpose |
