@@ -12,7 +12,7 @@ type FileRecord = {
   size: number;
   createdAt: string;
 };
-type SpaceRecord = { code: string; visibility: "public" | "private"; createdAt: string };
+type SpaceRecord = { code: string; createdAt: string | null };
 type UploadStatus = { name: string; progress: number; status: "uploading" | "failed" | "done"; error?: string };
 
 const ACCEPTED = Object.keys(FILE_TYPES).map((extension) => `.${extension}`).join(",");
@@ -76,8 +76,6 @@ export function SpaceClient({ code }: { code: string }) {
   const [uploads, setUploads] = useState<UploadStatus[]>([]);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
-  const [credential, setCredential] = useState("");
-  const [managementMessage, setManagementMessage] = useState("");
   const [previews, setPreviews] = useState<Record<string, string>>({});
   const [reporting, setReporting] = useState("");
 
@@ -240,35 +238,6 @@ export function SpaceClient({ code }: { code: string }) {
     }
   }
 
-  async function manage(action: "delete-file" | "delete-space", fileId?: string) {
-    if (!credential.trim()) {
-      setManagementMessage("Enter the management key first.");
-      return;
-    }
-    const prompt = action === "delete-space"
-      ? "Permanently delete this space and every file in it?"
-      : "Permanently delete this file?";
-    if (!window.confirm(prompt)) return;
-    setManagementMessage("");
-    try {
-      const response = await fetch("/api/manage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code, credential, action, fileId }),
-        cache: "no-store",
-      });
-      await responseJson(response);
-      if (action === "delete-space") {
-        window.location.assign("/");
-      } else {
-        setFiles((current) => current.filter((file) => file.id !== fileId));
-        setManagementMessage("File deleted.");
-      }
-    } catch (reason) {
-      setManagementMessage(reason instanceof Error ? reason.message : "Management action failed.");
-    }
-  }
-
   async function report(file: FileRecord, event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget;
@@ -326,12 +295,10 @@ export function SpaceClient({ code }: { code: string }) {
 
       <section className="space-header">
         <div>
-          <div className="eyebrow"><span className="status-dot" /> {space.visibility === "public" ? "Public space" : "Private space"}</div>
+          <div className="eyebrow"><span className="status-dot" /> Private space</div>
           <h1 className="space-code">{formatCode(space.code)}</h1>
           <p className="space-subtitle">
-            {space.visibility === "public"
-              ? "Anyone with this number can view and add files."
-              : "Unlisted, not encrypted. Anyone with this number can access its files."}
+            Only people with this exact number can view and add files. Files cannot be deleted.
           </p>
         </div>
         <button className="button button-secondary copy-code-button" onClick={copyCode}>
@@ -381,7 +348,7 @@ export function SpaceClient({ code }: { code: string }) {
           <div className="empty-state">
             <div className="empty-icon" aria-hidden="true">▱</div>
             <h3>Nothing here yet</h3>
-            <p>Be the first to add something to this space.</p>
+            <p>Nothing has been posted under this number. Add the first file.</p>
           </div>
         ) : (
           <div className="file-grid">
@@ -425,9 +392,6 @@ export function SpaceClient({ code }: { code: string }) {
                         <button className="text-button" type="submit">{reporting === file.id ? "Reported" : "Send report"}</button>
                       </form>
                     </details>
-                    {space.visibility === "private" && credential && (
-                      <button className="text-button text-danger" type="button" onClick={() => void manage("delete-file", file.id)}>Delete</button>
-                    )}
                   </div>
                 </article>
               );
@@ -440,21 +404,6 @@ export function SpaceClient({ code }: { code: string }) {
           </button>
         )}
       </section>
-
-      {space.visibility === "private" && (
-        <details className="management-panel">
-          <summary>Manage this private space</summary>
-          <div className="management-content">
-            <p>Enter the separate management key created with this space. The space number alone cannot delete files.</p>
-            <label htmlFor="management-key">Management key</label>
-            <input id="management-key" type="password" autoComplete="off" value={credential} onChange={(event) => setCredential(event.target.value)} />
-            <div className="button-row">
-              <button className="button button-secondary danger-outline" onClick={() => void manage("delete-space")}>Delete space and all files</button>
-            </div>
-            {managementMessage && <p className="field-help" role="status">{managementMessage}</p>}
-          </div>
-        </details>
-      )}
 
       <footer className="space-footer">
         <span>Files in this space are stored privately.</span>

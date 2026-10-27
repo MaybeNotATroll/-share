@@ -1,64 +1,45 @@
-import { createHash, randomBytes } from "node:crypto";
-import { NextResponse } from "next/server";
-import { z } from "zod";
 import { generatePrivateCode } from "@/src/lib/server-code";
-import { enforceRateLimit, isUniqueViolation, jsonError, jsonNoStore, readJsonBody } from "@/src/lib/http";
+import {
+  databaseError,
+  discardSmallRequestBody,
+  enforceRateLimit,
+  getSpace,
+  jsonError,
+  jsonNoStore,
+  serviceError,
+} from "@/src/lib/http";
 import { getSupabase } from "@/src/lib/supabase";
 
 export const runtime = "nodejs";
 
+const MAX_ATTEMPTS = 10;
+
+async function hasPostedContent(code: string): Promise<boolean> {
+  const space = await getSpace(code, true);
+  if (!space) return false;
+  if (space.blocked_at) return true;
+  const { count, error } = await getSupabase()
+    .from("files")
+    .select("id", { count: "exact", head: true })
+    .eq("space_id", space.id);
+  if (error) throw databaseError(error, "Files could not be checked.");
+  return (count ?? 0) > 0;
+}
+
 export async function POST(request: Request) {
   try {
-    if (!(await enforceRateLimit(request, "generate", 5, 60))) {
-      return jsonError("Too many private numbers requested. Try again shortly.", 429);
+    if (!(await discardSmallRequestBody(request, 2048))) return jsonError("Request is too large.", 413);
+    if (!(await enforceRateLimit(request, "generate", 10, 60))) {
+      return jsonError("Too many numbers requested. Try again shortly.", 429);
     }
-    const body = await readJsonBody(request, 2048);
-    if (!body.ok) return jsonError(body.tooLarge ? "Request is too large." : "Request is invalid.", body.tooLarge ? 413 : 400);
-    const parsed = z.object({ idempotencyKey: z.string().uuid() }).safeParse(body.value);
-    if (!parsed.success) return jsonError("Request is invalid.", 400);
 
-    const supabase = getSupabase();
-    const requestHash = createHash("sha256").update(parsed.data.idempotencyKey).digest("hex");
-    const { error: requestError } = await supabase
-      .from("private_generation_requests")
-      .insert({ request_hash: requestHash });
-    if (isUniqueViolation(requestError)) {
-      return jsonError("This request was already processed. Generate a fresh request to continue.", 409);
-    }
-    if (requestError) return jsonError("A private space could not be created. Please try again.", 503);
-
-    for (let attempt = 0; attempt < 5; attempt += 1) {
+    // Keep drawing fresh random 100-digit codes until one has nothing posted under it.
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
       const code = generatePrivateCode();
-      const managementCredential = randomBytes(32).toString("base64url");
-      const managementHash = createHash("sha256").update(managementCredential).digest("hex");
-      const { data: space, error } = await supabase.from("spaces").insert({
-        code,
-        visibility: "private",
-        management_key_hash: managementHash,
-      }).select("id").single();
-
-      if (isUniqueViolation(error)) continue;
-      if (error || !space) {
-        await supabase.from("private_generation_requests").delete().eq("request_hash", requestHash);
-        return jsonError("A private space could not be created. Please try again.", 503);
-      }
-
-      const { error: linkError } = await supabase
-        .from("private_generation_requests")
-        .update({ space_id: space.id })
-        .eq("request_hash", requestHash);
-      if (linkError) {
-        await supabase.from("spaces").delete().eq("id", space.id);
-        await supabase.from("private_generation_requests").delete().eq("request_hash", requestHash);
-        return jsonError("A private space could not be created. Please try again.", 503);
-      }
-
-      return jsonNoStore({ code, managementCredential }, 201);
+      if (!(await hasPostedContent(code))) return jsonNoStore({ code });
     }
-
-    await supabase.from("private_generation_requests").delete().eq("request_hash", requestHash);
-    return jsonError("A unique private number could not be reserved. Please try again.", 503);
-  } catch {
-    return jsonError("The service is temporarily unavailable. Please try again.", 503);
+    return jsonError("An unused number could not be found. Please try again.", 503);
+  } catch (error) {
+    return serviceError(error);
   }
 }

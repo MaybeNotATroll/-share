@@ -11,7 +11,15 @@ import {
   uploadMetadataSchema,
   validTypeHint,
 } from "@/src/lib/files";
-import { enforceRateLimit, readJsonBody, jsonError, jsonNoStore, resolveSpace } from "@/src/lib/http";
+import {
+  enforceRateLimit,
+  getOrCreateSpace,
+  getSpace,
+  jsonError,
+  jsonNoStore,
+  readJsonBody,
+  serviceError,
+} from "@/src/lib/http";
 import { getSupabase, STORAGE_BUCKET } from "@/src/lib/supabase";
 
 export const runtime = "nodejs";
@@ -30,9 +38,9 @@ export async function GET(
     if (!(await enforceRateLimit(request, "list", 120, 60))) {
       return jsonError("Too many requests. Try again shortly.", 429);
     }
-    const { space, rateLimited } = await resolveSpace(request, code);
-    if (rateLimited) return jsonError("Too many new spaces requested. Try again later.", 429);
-    if (!space) return jsonError("This space is unavailable.", 404);
+    const space = await getSpace(code, true);
+    if (space?.blocked_at) return jsonError("This space is unavailable.", 404);
+    if (!space) return jsonNoStore({ files: [], nextCursor: null });
 
     const url = new URL(request.url);
     const rawLimit = Number(url.searchParams.get("limit") ?? 24);
@@ -83,8 +91,8 @@ export async function GET(
         : null;
 
     return jsonNoStore({ files, nextCursor });
-  } catch {
-    return jsonError("The service is temporarily unavailable. Please try again.", 503);
+  } catch (error) {
+    return serviceError(error);
   }
 }
 
@@ -105,10 +113,6 @@ export async function POST(
     if (!parsed.success || parsed.data.files.length > maxFilesPerRequest()) {
       return jsonError(`Choose up to ${maxFilesPerRequest()} files at a time.`, 400);
     }
-    const { space, rateLimited } = await resolveSpace(request, code);
-    if (rateLimited) return jsonError("Too many new spaces requested. Try again later.", 429);
-    if (!space) return jsonError("This space is unavailable.", 404);
-
     const prepared = parsed.data.files.map((input) => {
       const name = sanitizeFilename(input.name);
       const fileType = getFileType(name);
@@ -118,6 +122,14 @@ export async function POST(
       if (input.size > maxFileBytes()) throw new Error("A file exceeds the individual size limit.");
       return { input, name, ...fileType };
     });
+
+    const existing = await getSpace(code, true);
+    if (existing?.blocked_at) return jsonError("This space is unavailable.", 404);
+    if (!existing && !(await enforceRateLimit(request, "space-create", 20, 3600))) {
+      return jsonError("Too many new spaces started. Try again later.", 429);
+    }
+    const space = existing ?? (await getOrCreateSpace(code));
+    if (!space) return jsonError("This space is unavailable.", 404);
 
     const supabase = getSupabase();
     const reservations: { id: string; storageKey: string; uploadUrl: string }[] = [];
@@ -176,6 +188,6 @@ export async function POST(
     if (error instanceof Error && error.message.includes("individual size")) {
       return jsonError("A file exceeds the individual size limit.", 413);
     }
-    return jsonError("The service is temporarily unavailable. Please try again.", 503);
+    return serviceError(error);
   }
 }

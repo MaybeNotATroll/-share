@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { getVisibility } from "./code";
+import { ServiceSetupError } from "./service-setup-error";
 import { getSupabase } from "./supabase";
 
 export async function readJsonBody(
@@ -73,14 +74,14 @@ export async function enforceRateLimit(
     "unknown";
   const secret =
     process.env.RATE_LIMIT_SECRET ?? process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
-  if (Buffer.byteLength(secret) < 32) throw new Error("Rate limiting is not configured.");
+  if (Buffer.byteLength(secret) < 32) throw new ServiceSetupError("Rate limiting is not configured.");
   const key = createHmac("sha256", secret).update(`${action}:${ip}`).digest("hex");
   const { data, error } = await getSupabase().rpc("check_rate_limit", {
     p_key: key,
     p_limit: limit,
     p_window_seconds: seconds,
   });
-  if (error) throw new Error("Rate limiting is temporarily unavailable.");
+  if (error) throw databaseError(error, "Rate limiting is temporarily unavailable.");
   return data === true;
 }
 
@@ -91,34 +92,47 @@ export function matchesSecret(candidate: string, expected: string | undefined): 
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-export async function getSpace(code: string, createPublic = false, includeBlocked = false) {
-  const supabase = getSupabase();
-  if (createPublic) {
-    const { error } = await supabase
-      .from("spaces")
-      .upsert({ code, visibility: "public" }, { onConflict: "code", ignoreDuplicates: true });
-    if (error) throw new Error("Space is temporarily unavailable.");
-  }
+const MISSING_SCHEMA_CODES = new Set(["42P01", "42883", "PGRST202", "PGRST205"]);
 
-  const { data, error } = await supabase
+export function databaseError(error: { code?: string } | null, message: string): Error {
+  if (error?.code && MISSING_SCHEMA_CODES.has(error.code)) {
+    return new ServiceSetupError("The database migration has not been applied.");
+  }
+  return new Error(message);
+}
+
+export function serviceError(error: unknown) {
+  if (error instanceof ServiceSetupError) {
+    return jsonError(
+      "The service is not set up yet. The site operator must configure Supabase and apply the database migration.",
+      503,
+    );
+  }
+  return jsonError("The service is temporarily unavailable. Please try again.", 503);
+}
+
+export async function getSpace(code: string, includeBlocked = false) {
+  const { data, error } = await getSupabase()
     .from("spaces")
-    .select("id,code,visibility,created_at,blocked_at,management_key_hash")
+    .select("id,code,created_at,blocked_at")
     .eq("code", code)
     .maybeSingle();
-  if (error) throw new Error("Space is temporarily unavailable.");
+  if (error) throw databaseError(error, "Space is temporarily unavailable.");
   if (!data || (data.blocked_at && !includeBlocked)) return null;
   return data;
 }
 
-export async function resolveSpace(request: Request, code: string) {
-  const existing = await getSpace(code);
-  if (existing || getVisibility(code) === "private") {
-    return { space: existing, rateLimited: false };
-  }
-  if (!(await enforceRateLimit(request, "public-space-create", 20, 3600))) {
-    return { space: null, rateLimited: true };
-  }
-  return { space: await getSpace(code, true), rateLimited: false };
+export async function getOrCreateSpace(code: string) {
+  const { error } = await getSupabase()
+    .from("spaces")
+    .upsert(
+      // The legacy visibility column is retained only to satisfy the existing schema
+      // constraint. Every space is private and requires its exact code.
+      { code, visibility: getVisibility(code) },
+      { onConflict: "code", ignoreDuplicates: true },
+    );
+  if (error) throw databaseError(error, "Space is temporarily unavailable.");
+  return getSpace(code);
 }
 
 export function isUniqueViolation(error: { code?: string } | null): boolean {

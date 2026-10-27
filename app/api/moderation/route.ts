@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { getVisibility } from "@/src/lib/code";
 import { spaceCodeSchema } from "@/src/lib/validation";
 import { enforceRateLimit, getSpace, jsonError, jsonNoStore, matchesSecret, readJsonBody } from "@/src/lib/http";
 import { getSupabase, STORAGE_BUCKET } from "@/src/lib/supabase";
@@ -27,7 +26,7 @@ export async function POST(request: Request) {
     const parsed = moderationSchema.safeParse(body.value);
     if (!parsed.success) return jsonError("Moderation request is invalid.", 400);
     const { code, action, fileId } = parsed.data;
-    const space = await getSpace(code, false, true);
+    const space = await getSpace(code, true);
     if (!space) return jsonError("This space is unavailable.", 404);
     const supabase = getSupabase();
 
