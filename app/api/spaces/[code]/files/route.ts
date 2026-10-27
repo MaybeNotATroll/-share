@@ -10,9 +10,12 @@ import {
   sanitizeFilename,
   uploadMetadataSchema,
   validTypeHint,
+  uploadRateLimit,
+  uploadRateWindowSeconds,
 } from "@/src/lib/files";
 import {
   enforceRateLimit,
+  databaseError,
   getOrCreateSpace,
   getSpace,
   jsonError,
@@ -20,7 +23,9 @@ import {
   readJsonBody,
   serviceError,
 } from "@/src/lib/http";
-import { getSupabase, STORAGE_BUCKET } from "@/src/lib/supabase";
+import { getSupabase } from "@/src/lib/supabase";
+import { createUploadUrl, getR2Client } from "@/src/lib/storage";
+import { activeFileCutoff } from "@/src/lib/file-lifetime";
 
 export const runtime = "nodejs";
 
@@ -52,6 +57,7 @@ export async function GET(
       .select("id,original_name,content_type,size_bytes,created_at")
       .eq("space_id", space.id)
       .eq("status", "ready")
+      .gt("created_at", activeFileCutoff())
       .order("created_at", { ascending: false })
       .order("id", { ascending: false })
       .limit(limit + 1);
@@ -103,7 +109,7 @@ export async function POST(
   try {
     const { code } = await context.params;
     if (!spaceCodeSchema.safeParse(code).success) return jsonError("Enter a valid code.", 400);
-    if (!(await enforceRateLimit(request, "upload", 12, 60))) {
+    if (!(await enforceRateLimit(request, "upload", uploadRateLimit(), uploadRateWindowSeconds()))) {
       return jsonError("Too many uploads. Try again shortly.", 429);
     }
 
@@ -123,6 +129,7 @@ export async function POST(
       return { input, name, ...fileType };
     });
 
+    getR2Client();
     const existing = await getSpace(code, true);
     if (existing?.blocked_at) return jsonError("This space is unavailable.", 404);
     if (!existing && !(await enforceRateLimit(request, "space-create", 20, 3600))) {
@@ -135,7 +142,7 @@ export async function POST(
     const reservations: { id: string; storageKey: string; uploadUrl: string }[] = [];
     for (const file of prepared) {
       const storageKey = `${space.id}/${randomUUID()}`;
-      const { data: fileId, error: reserveError } = await supabase.rpc("reserve_upload", {
+      const { data: fileId, error: reserveError } = await supabase.rpc("reserve_r2_upload", {
         p_space_id: space.id,
         p_original_name: file.name,
         p_storage_key: storageKey,
@@ -149,6 +156,9 @@ export async function POST(
         for (const reserved of reservations) {
           await supabase.from("files").delete().eq("id", reserved.id);
         }
+        if (reserveError && !["54000", "22023"].includes(reserveError.code)) {
+          throw databaseError(reserveError, "An upload could not be reserved.");
+        }
         const quota = reserveError?.code === "54000" || reserveError?.code === "22023";
         return jsonError(
           quota ? "This space has reached its upload limit." : "An upload could not be reserved.",
@@ -156,17 +166,16 @@ export async function POST(
         );
       }
 
-      const { data: signed, error: signError } = await supabase.storage
-        .from(STORAGE_BUCKET)
-        .createSignedUploadUrl(storageKey, { upsert: false });
-      if (signError || !signed) {
+      try {
+        const uploadUrl = await createUploadUrl(storageKey, file.input.size, file.mime);
+        reservations.push({ id: fileId, storageKey, uploadUrl });
+      } catch {
         await supabase.from("files").delete().eq("id", fileId);
         for (const reserved of reservations) {
           await supabase.from("files").delete().eq("id", reserved.id);
         }
         return jsonError("An upload could not be started. Please try again.", 503);
       }
-      reservations.push({ id: fileId, storageKey, uploadUrl: signed.signedUrl });
     }
 
     return jsonNoStore({
@@ -176,6 +185,7 @@ export async function POST(
         name: prepared[index].name,
         contentType: prepared[index].mime,
         size: prepared[index].input.size,
+        headers: { "If-None-Match": "*" },
       })),
     }, 201);
   } catch (error) {

@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import { ServiceSetupError } from "./service-setup-error";
+import { ServiceSetupError } from "./service-setup-error.ts";
 
 export function getSupabase() {
   const url = process.env.SUPABASE_URL;
@@ -12,3 +12,4 @@ export function getSupabase() {
 }
 
 export const STORAGE_BUCKET = "share-files";
+import "server-only";

@@ -43,7 +43,7 @@ function xhrUpload(
     const xhr = new XMLHttpRequest();
     xhr.open("PUT", url);
     xhr.setRequestHeader("content-type", contentType);
-    xhr.setRequestHeader("x-upsert", "false");
+    xhr.setRequestHeader("If-None-Match", "*");
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) progress(Math.round((event.loaded / event.total) * 100));
     };
@@ -298,7 +298,7 @@ export function SpaceClient({ code }: { code: string }) {
           <div className="eyebrow"><span className="status-dot" /> Private space</div>
           <h1 className="space-code">{formatCode(space.code)}</h1>
           <p className="space-subtitle">
-            Only people with this exact number can view and add files. Files cannot be deleted.
+            Only people with this exact number can view and add files. Files expire after 24 hours; visitors cannot delete them.
           </p>
         </div>
         <button className="button button-secondary copy-code-button" onClick={copyCode}>

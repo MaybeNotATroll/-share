@@ -1,7 +1,9 @@
 import { z } from "zod";
 import { spaceCodeSchema } from "@/src/lib/validation";
 import { enforceRateLimit, getSpace, jsonError, jsonNoStore } from "@/src/lib/http";
-import { getSupabase, STORAGE_BUCKET } from "@/src/lib/supabase";
+import { getSupabase } from "@/src/lib/supabase";
+import { createDownloadUrl } from "@/src/lib/storage";
+import { activeFileCutoff, fileAccessSeconds } from "@/src/lib/file-lifetime";
 
 export const runtime = "nodejs";
 
@@ -24,10 +26,11 @@ export async function GET(
     const supabase = getSupabase();
     const { data: file, error } = await supabase
       .from("files")
-      .select("id,storage_key,original_name,content_type,status")
+      .select("id,storage_key,original_name,content_type,status,created_at,storage_provider")
       .eq("id", id)
       .eq("space_id", space.id)
       .eq("status", "ready")
+      .gt("created_at", activeFileCutoff())
       .maybeSingle();
     if (error || !file) return jsonError("This file is unavailable.", 404);
     if (mode === "preview" && !["image/", "video/", "application/pdf"].some((prefix) =>
@@ -36,13 +39,12 @@ export async function GET(
       return jsonError("Preview is not available for this file type.", 415);
     }
 
-    const { data: signed, error: signError } = await supabase.storage
-      .from(STORAGE_BUCKET)
-      .createSignedUrl(file.storage_key, 60, {
-        download: mode === "download" ? file.original_name : undefined,
-      });
-    if (signError || !signed) return jsonError("This file is temporarily unavailable.", 503);
-    return jsonNoStore({ url: signed.signedUrl, expiresIn: 60 });
+    const seconds = fileAccessSeconds(file.created_at);
+    if (seconds < 1) return jsonError("This file is unavailable.", 404);
+    const url = await createDownloadUrl(
+      file.storage_provider, file.storage_key, file.original_name, mode === "download", seconds,
+    );
+    return jsonNoStore({ url, expiresIn: seconds });
   } catch {
     return jsonError("The service is temporarily unavailable. Please try again.", 503);
   }

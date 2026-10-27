@@ -104,7 +104,7 @@ export function databaseError(error: { code?: string } | null, message: string):
 export function serviceError(error: unknown) {
   if (error instanceof ServiceSetupError) {
     return jsonError(
-      "The service is not set up yet. The site operator must configure Supabase and apply the database migration.",
+      "The service is not set up yet. The site operator must configure Supabase, R2, and rate limiting, and apply the database migrations.",
       503,
     );
   }

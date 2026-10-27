@@ -1,6 +1,6 @@
 # Numa
 
-Numa is a number-based file-sharing app built with Next.js, Supabase Postgres, and private Supabase Storage. “Numa” is a provisional product name.
+Numa is a number-based file-sharing app built with Next.js App Router, Supabase Postgres, and private Cloudflare R2 object storage using the official AWS S3 SDK. Existing Supabase Storage objects remain supported during migration. “Numa” is a provisional product name.
 
 ## What it does
 
@@ -12,26 +12,29 @@ Numa is a number-based file-sharing app built with Next.js, Supabase Postgres, a
 
 The number is the only credential (a bearer secret, not encryption). Short numbers are easy to guess, so use a generated 100-digit number for anything that should stay private, and never share it where it should remain confidential.
 
-If the app responds “The service is not set up yet”, the deployment is missing `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` (or a 32+ byte `RATE_LIMIT_SECRET`), or the migration below has not been applied to that Supabase project.
+If the app responds “The service is not set up yet”, check the server-only Supabase/R2 variables, the rate-limit secret, and that **both** database migrations below have been applied. R2 does not replace Supabase Postgres.
 
 ## Local setup
 
-Requirements: Node.js 24 or newer and a Supabase project.
+Requirements: Node.js 24 or newer, a Supabase project, and the private R2 bucket `number-share-files`.
 
 1. Install packages: `npm ci`.
 2. Copy `.env.example` to `.env.local`.
-3. Configure the Supabase variables below.
-4. Apply `supabase/migrations/20261026000000_initial.sql` to the project. Use the Supabase SQL Editor or the Supabase CLI against the intended project.
+3. Configure the server-only variables below and the R2 bucket settings.
+4. Apply `supabase/migrations/20261026000000_initial.sql`, then `supabase/migrations/20261027000000_r2_storage.sql`. For an existing installation, apply only the new migration; do not rerun the initial migration. Use the Supabase SQL Editor or CLI against the intended project.
 5. Run `npm run dev`, then open `http://localhost:3000`.
 
-The migration creates the schema, constraints, indexes, quota/rate-limit functions, and a **private** `share-files` Storage bucket. It revokes direct anonymous/authenticated table and object access. The application uses the service-role key only in server route handlers; never add it to a `NEXT_PUBLIC_*` variable or browser code.
+The initial migration creates the schema, constraints, indexes, quota/rate-limit functions, and legacy **private** `share-files` Supabase Storage bucket. It revokes direct anonymous/authenticated table and object access. The new migration marks existing file/cleanup rows as `supabase`, adds the service-role-only `reserve_r2_upload` wrapper that atomically records new uploads as `r2`, and adds an expiration index and transactional deletion queue trigger. Legacy writers still default to Supabase during rollout; missing the new RPC fails uploads before any R2 URL is issued. It does not copy or discard old objects. Existing files also expire 24 hours after their original reservation timestamp; applying this change makes older files inaccessible and eligible for cleanup. Finish or cancel pending legacy uploads before switching versions; they cannot be completed by the new version and otherwise expire automatically. Never add the service-role key to a `NEXT_PUBLIC_*` variable or browser code.
 
 ### Environment variables
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `SUPABASE_URL` | Yes | Supabase project URL |
-| `SUPABASE_SERVICE_ROLE_KEY` | Yes | Server-only database and Storage access |
+| `SUPABASE_SERVICE_ROLE_KEY` | Yes | Server-only database and legacy Supabase Storage access |
+| `R2_ACCOUNT_ID` | Yes for new uploads | Cloudflare 32-character account ID; code constructs `https://<account-id>.r2.cloudflarestorage.com` with S3 region `auto` |
+| `R2_ACCESS_KEY_ID` | Yes for new uploads | R2 S3 API access key ID, scoped to `number-share-files` |
+| `R2_SECRET_ACCESS_KEY` | Yes for new uploads | R2 S3 API secret access key; server-only |
 | `RATE_LIMIT_SECRET` | Recommended | HMAC key for pseudonymous, per-IP rate-limit identifiers. If unset, the server-only service-role key is used. |
 | `MODERATION_TOKEN` | For moderation | A bearer token authorizing restricted moderation actions |
 | `CRON_SECRET` | For scheduled cleanup | Secret used by the cleanup route; set this in Vercel for the configured cron |
@@ -39,18 +42,46 @@ The migration creates the schema, constraints, indexes, quota/rate-limit functio
 | `MAX_FILES_PER_REQUEST` | No | Files reserved in one request, from 1 to 5; default `5` |
 | `MAX_SPACE_BYTES` | No | Reserved plus uploaded bytes per space; default `1073741824` (1 GiB) |
 | `MAX_FILES_PER_SPACE` | No | Reserved plus uploaded files per space; default `1000` |
+| `UPLOAD_RATE_LIMIT` | No | Upload reservation requests per IP/window, from 1 to 10,000; default `12` |
+| `UPLOAD_RATE_WINDOW_SECONDS` | No | Upload rate-limit window, from 1 to 86,400 seconds; default `60` |
 
 Use long, unique random values for rate-limit, moderation, and cron secrets. Do not commit `.env.local` or real credentials.
 
+The bucket name is fixed in code as `number-share-files`; there is no bucket-name or endpoint environment variable. None of these variables uses the `NEXT_PUBLIC_` prefix. Storage and Supabase modules have server-only import boundaries. Invalid optional numeric limits fall back to their documented defaults.
+
+### Cloudflare R2 bucket setup
+
+1. Create `number-share-files`. Keep both **Public Development URL (r2.dev)** and public custom domains disabled. Do not use a public bucket URL.
+2. Create R2 S3 API credentials with **Object Read & Write** permissions restricted to this bucket. Enter them directly in your local environment or Vercel; do not paste them into GitHub, source files, screenshots, logs, or chat.
+3. Add a bucket CORS policy allowing only your exact application origins. For example, replace this example origin with the intended production origin (and add localhost or specific preview origins only when needed):
+
+   ```json
+   [{
+     "AllowedOrigins": ["https://your-app.example"],
+     "AllowedMethods": ["PUT", "GET", "HEAD"],
+     "AllowedHeaders": ["Content-Type", "Content-Length", "If-None-Match", "Range"],
+     "ExposeHeaders": ["ETag", "Content-Range", "Content-Length"],
+     "MaxAgeSeconds": 300
+   }]
+   ```
+
+   CORS does not authorize requests or make the bucket public. Uploads require the signed `Content-Type`, exact `Content-Length`, and `If-None-Match: *`. The browser sets Content-Length from the raw File body; do not set that forbidden header manually or wrap the file in FormData. R2 rejects changes to signed headers and repeat writes to an existing key. This prevents publishing a validated object and later overwriting its content through the upload URL.
+4. Add an R2 lifecycle rule for all objects to **delete objects after one day**, plus abort incomplete multipart uploads. This is a required safety net for orphaned/in-flight uploads and scheduler outages, not the authorization mechanism; lifecycle deletion is asynchronous and does not guarantee deletion at exactly 24 hours. Do not point other applications at this bucket.
+5. Keep the legacy Supabase `share-files` bucket private until its old files and cleanup queue have drained. New uploads never use it. If using a nonstandard Supabase hostname, update the exact trusted CSP host in `next.config.ts`.
+
 ## Upload limits and cleanup
 
-The initial version caps each file at 50 MiB (or a lower `MAX_FILE_BYTES` value), each request at five files, and each space at 1 GiB/1,000 files by default. Storage enforces the 50 MiB hard limit independently of the app. A file is reserved against its space quota before upload; uncompleted reservations are removed after 24 hours. Objects deleted while their signed upload token might still be valid are queued for a final cleanup after three hours. Uploads go from the browser directly to the private Storage bucket using a one-use signed upload URL, avoiding buffering large file bodies in a serverless function. The server verifies the resulting object size and file signature before publishing it in the listing.
+The server caps each file at 50 MiB (or a lower `MAX_FILE_BYTES` value), each request at five files, and each space at 1 GiB/1,000 files by default. Supabase's existing row-locked `reserve_upload` RPC reserves bytes and file count atomically before signing, including pending files, so concurrent requests cannot bypass space quotas. The five-minute R2 PUT signature binds the exact reserved size and MIME type, and conditional writes prohibit overwriting an existing object. Uploads go directly from the browser to R2 to avoid Vercel's request-body limit; the server verifies actual object length, MIME type, and file signature through a bounded S3 Range read before publishing.
 
-Default per-IP limits include 20 new spaces/hour (counted on a space's first upload), ten number-generation requests/minute, 12 upload reservations/minute, and five reports/minute. Opening/listing/downloading are limited to 120 requests/minute. These limits are basic abuse controls, not a substitute for provider-level DDoS controls or moderation.
+Default per-IP limits include 20 new spaces/hour (counted on a space's first upload), ten number-generation requests/minute, 12 upload reservation requests/minute (configurable above), and five reports/minute. Each upload request can reserve up to the configured file count. Opening/listing/downloading are limited to 120 requests/minute. Limits use the existing shared Postgres RPC, not per-instance memory. These are basic abuse controls, not a substitute for provider-level DDoS controls or moderation.
 
 Images (JPEG, PNG, GIF, WebP, AVIF), MP4, WebM, and PDF can be previewed. SVG and HTML are not allowed. Supported office formats, RTF, ZIP, text, CSV, Markdown, and JSON are downloadable. Unknown extensions are rejected. The browser-provided MIME type is only a consistency check; the server chooses stored MIME types from an allowlist and checks signatures for supported binary formats.
 
-Vercel runs `/api/cleanup` daily at 03:00 UTC using `vercel.json`. Set `CRON_SECRET` in Vercel so only the scheduled request can invoke it. Cleanup deletes abandoned pending objects/rows older than 24 hours, old rate-limit windows, and generation idempotency records older than 30 days. It does not expire shared spaces or completed files. If using another host, schedule an authenticated GET to `/api/cleanup` daily with the cron secret in the Authorization bearer header.
+**Every file expires 24 hours after reservation (`files.created_at`), not after completion.** Listing, download/preview authorization, completion, cancellation, and reports check expiration on the server. Download URLs last at most 60 seconds, shortened to whole seconds remaining before expiration; URLs are not issued in the final partial second. Expiration does not depend on cron. Spaces themselves do not expire. Previously downloaded bytes cannot be revoked, and a transfer accepted before expiry may finish afterwards.
+
+Vercel runs `/api/cleanup` daily at 03:00 UTC using `vercel.json`. Set a 32+ byte `CRON_SECRET` so only authenticated scheduled requests can invoke it. It drains expired pending **and ready** metadata in batches, then deletes due objects from their recorded storage provider. A database trigger atomically preserves each object key in a durable cleanup queue and releases quota when metadata is deleted. Moderation/cancellation revoke metadata before immediate object removal. Fresh deletions are queued again after ten minutes (three hours for legacy Supabase upload tokens), covering still-valid upload links; expired files are queued immediately. Failed object removals retain their keys for retry, including S3 per-object errors returned inside a successful HTTP response. Cleanup only acknowledges a queue entry if its scheduled time has not changed.
+
+The route also removes old rate-limit windows and generation idempotency records. It works within a 45-second processing budget / 60-second route duration, returns **503** on failure or remaining backlog, and retries retained work on subsequent invocations. Failed provider batches are rescheduled with a 15-minute backoff so a failing object cannot starve later batches or the other provider. Monitor cron responses and queue age; Vercel does not automatically retry failed cron jobs. Configure an external authenticated scheduler with retries, or a more frequent Vercel schedule if your plan supports it, for higher traffic. Never put the secret in a query string. The checked-in daily schedule remains compatible with once-daily hosting plans. Physical deletion can lag expiry until the next successful run; the R2 lifecycle rule is an independent backstop. This code does not configure Cloudflare lifecycle rules, Vercel secrets, or monitoring for you.
 
 ## Database and Storage access
 
@@ -75,12 +106,14 @@ Do not expose the moderation token to visitors or automate removals without revi
 
 ## Deployment to Vercel
 
-1. Create a Supabase project and apply the migration before deploying.
+1. Create a Supabase project and apply both migrations in order (only the new migration on an existing installation). Configure the private R2 bucket, CORS, lifecycle rule, and scoped credentials above.
 2. Import this repository into Vercel. In **Settings → Build and Deployment**, select **Next.js** as the Framework Preset and set **Root Directory** to the repository root (leave it empty, not `app` or `src`). This is where `package.json`, `next.config.ts`, and `vercel.json` live. Use Node.js **24.x**.
 3. Disable dashboard overrides for Build Command, Output Directory, and Install Command. The checked-in `vercel.json` pins the Next.js framework, `npm run build`, and `.next` output. Keep `package-lock.json` committed for reproducible dependency installation (`npm ci` locally). Remove any old `public`, `dist`, or `out` output setting and any `next export` build command.
-4. Set the required variables above in the Vercel project settings for the appropriate environments. Keep service-role, moderation, and cron secrets server-side.
+4. In **Project → Settings → Environment Variables**, add `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `RATE_LIMIT_SECRET`, `CRON_SECRET`, and `MODERATION_TOKEN` using the descriptions above. Mark sensitive values as sensitive where available. Select **Production** and only the **Preview/Development** environments that should have access; use separate disposable Supabase projects/R2 accounts with the same bucket name for staging. Add any optional limit variables there as needed. Do not create any `NEXT_PUBLIC_*` versions. Redeploy after variable changes: the account-specific CSP origin is read at build time as well as storage configuration at runtime.
 5. Deploy the commit containing this configuration (or redeploy that commit with the build cache disabled). Confirm the build runs `next build`, uses the Next.js framework, and includes dynamic `/api/*` and `/space/[code]` routes. Confirm the Vercel Cron is enabled and `CRON_SECRET` is configured.
-6. Open a number, generate a number, and upload/download a small file in each. Redeploy, then reopen the same spaces and verify the files remain available. This confirms files are in persistent object storage, not the application filesystem.
+6. On staging, open/generate a number and upload/download a small file; test preview, replay rejection, wrong-space denial, size/quota/rate rejection, and moderation deletion. Verify expiration with aged test metadata and invoke authenticated cleanup twice, including a simulated storage failure and retry. Confirm expired files never receive download URLs and queued keys eventually disappear. Redeploy and verify unexpired files remain available. Do not use real user files for these checks.
+
+These settings and migrations must be applied by the operator. No bucket, database migration, Vercel configuration, or deployment is created automatically by this repository change.
 
 ### Why “Missing public directory” occurs
 
@@ -88,13 +121,14 @@ This is a Next.js App Router application, not a static site. `next build` writes
 
 The repository previously specified only the cron in `vercel.json`, leaving framework/output selection to Vercel's project settings and auto-detection. The explicit settings now keep this deployment on the Next.js pipeline. Dashboard settings and private Vercel build logs are not tracked here, so the exact previous dashboard value must be confirmed in the failed deployment's settings/logs. Do not add an empty `public` folder, use `output: "export"`, or deploy `.next` as a generic static directory: API routes, private-space generation, and signed Storage operations require the Next.js server runtime.
 
-If using a nonstandard Supabase hostname, update the CSP host allowlist in `next.config.ts` to the exact trusted Supabase host before deployment.
+The CSP allows the exact account-specific R2 S3 endpoint derived from `R2_ACCOUNT_ID`, not arbitrary R2 accounts.
 
 ## Checks
 
-- `npm test` — unit tests for number/string handling, filename validation, allowed file types, and file signatures.
+- `npm test` — unit tests for domain rules, expiration boundaries, configured limits, S3 signing/header checks, object verification, and cleanup retry behavior. Uses Node's built-in runner and server-only import condition.
 - `npm run typecheck` — TypeScript checks.
 - `npm run build` — production Next.js build.
+- No lint script or lint configuration exists; no new lint tool is introduced.
 
 An opt-in integration test exercises opening an arbitrary number, generation, signed uploads/downloads, cross-space isolation, and the absence of a delete endpoint against a configured staging deployment:
 
@@ -102,7 +136,7 @@ An opt-in integration test exercises opening an arbitrary number, generation, si
 RUN_SUPABASE_INTEGRATION=1 BASE_URL=https://your-staging-app.example npm test
 ```
 
-It uploads a small file to a generated space. Because files cannot be deleted by visitors, remove test data with the moderation endpoint or the Supabase dashboard. Use only a disposable staging project. The repository does not include Supabase credentials, so these integration tests were not run here. Database concurrency/RLS behavior, Storage policy behavior, scheduled cleanup, and end-to-end flows must be verified against staging before production use.
+It uploads a small file to R2 through the app and checks overwrite rejection and cross-space isolation. Visitors cannot delete files; use moderation for early removal or let test files expire. Deleting database metadata now queues storage cleanup, but do not delete the whole Supabase project before its storage queue is drained. Use only a disposable staging project/bucket. The repository does not include credentials. Database concurrency/RLS, actual R2 signed-header enforcement, browser CORS, lifecycle rules, scheduled cleanup, and end-to-end flows must be verified against staging before production use; passing local mocks does not prove provider configuration.
 
 ## Operational notes
 
