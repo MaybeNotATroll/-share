@@ -4,7 +4,7 @@ import { maxFileBytes, verifyFileSignature } from "@/src/lib/files";
 import { discardSmallRequestBody, enforceRateLimit, getSpace, jsonError, jsonNoStore, serviceError } from "@/src/lib/http";
 import { getSupabase } from "@/src/lib/supabase";
 import { readUploadedHeader, removeObjects } from "@/src/lib/storage";
-import { activeFileCutoff, fileAccessSeconds } from "@/src/lib/file-lifetime";
+import { fileAccessSeconds } from "@/src/lib/file-lifetime";
 
 export const runtime = "nodejs";
 
@@ -26,12 +26,12 @@ export async function POST(
     const supabase = getSupabase();
     const { data: file, error: fileError } = await supabase
       .from("files")
-      .select("id,storage_key,size_bytes,content_type,status,original_name,created_at,storage_provider,upload_ip_hash,upload_reservation_expires_at")
+      .select("id,storage_key,size_bytes,content_type,status,original_name,created_at,expires_at,storage_provider,upload_ip_hash,upload_reservation_expires_at")
       .eq("id", id)
       .eq("space_id", space.id)
-      .gt("created_at", activeFileCutoff())
+      .gt("expires_at", new Date().toISOString())
       .maybeSingle();
-    if (fileError || !file || fileAccessSeconds(file.created_at) < 1) {
+    if (fileError || !file || fileAccessSeconds(file.created_at, 60, Date.now(), file.expires_at) < 1) {
       return jsonError("The upload could not be completed.", 404);
     }
     if (file.status === "ready") return jsonNoStore({ completed: true });
@@ -57,7 +57,7 @@ export async function POST(
       .eq("id", id)
       .eq("space_id", space.id)
       .eq("status", "pending")
-      .gt("created_at", activeFileCutoff())
+      .gt("expires_at", new Date().toISOString())
       .select("id");
     if (updateError?.code === "P0001" && updateError.message.includes("upload_reservation_expired")) {
       await supabase.from("files").delete().eq("id", id).eq("status", "pending");

@@ -84,6 +84,18 @@ export async function createDownloadUrl(
   }), { expiresIn: seconds });
 }
 
+export async function readObjectStream(key: string, range?: string, signal?: AbortSignal) {
+  const response = await getR2Client().send(new GetObjectCommand({
+    Bucket: R2_BUCKET, Key: key, Range: range,
+  }), { abortSignal: signal });
+  if (!response.Body) throw new Error("Object unavailable.");
+  return {
+    body: response.Body.transformToWebStream(),
+    length: response.ContentLength,
+    contentRange: response.ContentRange,
+  };
+}
+
 export async function removeObjects(provider: StorageProvider, keys: string[]) {
   if (keys.length === 0) return;
   if (provider === "supabase") {

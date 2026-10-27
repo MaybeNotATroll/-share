@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { DeleteObjectsCommand, GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { activeFileCutoff, fileAccessSeconds, FILE_LIFETIME_MS } from "../src/lib/file-lifetime.ts";
-import { createDownloadUrl, createUploadUrl, getR2Client, readUploadedHeader, removeObjects } from "../src/lib/storage.ts";
+import { createDownloadUrl, createUploadUrl, getR2Client, readObjectStream, readUploadedHeader, removeObjects } from "../src/lib/storage.ts";
 import { maxFileBytes, maxSpaceBytes, uploadRateLimit, uploadRateWindowSeconds } from "../src/lib/files.ts";
 
 function env(t: TestContext, name: string, value: string) {
@@ -97,6 +97,27 @@ test("object header validation uses a bounded authenticated range request", asyn
   assert.equal(result.size, 5);
   assert.equal(result.contentType, "text/plain");
   assert.equal(new TextDecoder().decode(result.bytes), "hello");
+});
+
+test("managed object reads forward Range and cancellation while returning the original web stream", async (t) => {
+  configureR2(t);
+  const controller = new AbortController();
+  const body = new ReadableStream<Uint8Array>();
+  t.mock.method(S3Client.prototype, "send", async (command: GetObjectCommand, options: { abortSignal: AbortSignal }) => {
+    assert.ok(command instanceof GetObjectCommand);
+    assert.equal(command.input.Key, "space/key");
+    assert.equal(command.input.Range, "bytes=1-3");
+    assert.equal(options.abortSignal, controller.signal);
+    return {
+      ContentLength: 3, ContentRange: "bytes 1-3/5",
+      Body: { transformToWebStream: () => body },
+    };
+  });
+  const result = await readObjectStream("space/key", "bytes=1-3", controller.signal);
+  assert.equal(result.body, body);
+  assert.equal(result.length, 3);
+  assert.equal(result.contentRange, "bytes 1-3/5");
+  await result.body.cancel();
 });
 
 test("object deletion detects per-object errors even when the S3 response succeeds", async (t) => {

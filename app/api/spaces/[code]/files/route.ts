@@ -25,7 +25,8 @@ import {
 } from "@/src/lib/http";
 import { getSupabase } from "@/src/lib/supabase";
 import { createUploadUrl, getR2Client } from "@/src/lib/storage";
-import { activeFileCutoff } from "@/src/lib/file-lifetime";
+import { expiresInSecondsSchema } from "@/src/lib/file-lifetime";
+import { uploadOwner, ownerCookie } from "@/src/lib/owner";
 import { clientIpKey } from "@/src/lib/client-ip";
 import { uploadQuotaMessage, type UploadQuota } from "@/src/lib/upload-quota";
 
@@ -33,6 +34,7 @@ export const runtime = "nodejs";
 
 const requestSchema = z.object({
   files: z.array(uploadMetadataSchema).min(1).max(5),
+  expiresInSeconds: expiresInSecondsSchema,
 });
 
 export async function GET(
@@ -56,10 +58,10 @@ export async function GET(
     if (cursor && cursor.length > 512) return jsonError("The file-list cursor is invalid.", 400);
     let query = getSupabase()
       .from("files")
-      .select("id,original_name,content_type,size_bytes,created_at")
+      .select("id,original_name,content_type,size_bytes,created_at,expires_at")
       .eq("space_id", space.id)
       .eq("status", "ready")
-      .gt("created_at", activeFileCutoff())
+      .gt("expires_at", new Date().toISOString())
       .order("created_at", { ascending: false })
       .order("id", { ascending: false })
       .limit(limit + 1);
@@ -91,6 +93,7 @@ export async function GET(
       contentType: file.content_type,
       size: Number(file.size_bytes),
       createdAt: file.created_at,
+      expiresAt: file.expires_at,
     }));
     const last = files.at(-1);
     const nextCursor =
@@ -118,6 +121,9 @@ export async function POST(
     const body = await readJsonBody(request, 16_384);
     if (!body.ok) return jsonError(body.tooLarge ? "Upload details are too large." : "Upload details are invalid.", body.tooLarge ? 413 : 400);
     const parsed = requestSchema.safeParse(body.value);
+    if (!expiresInSecondsSchema.safeParse((body.value as { expiresInSeconds?: unknown } | null)?.expiresInSeconds).success) {
+      return jsonError("Choose a supported file expiration.", 400);
+    }
     if (!parsed.success || parsed.data.files.length > maxFilesPerRequest()) {
       return jsonError(`Choose up to ${maxFilesPerRequest()} files at a time.`, 400);
     }
@@ -142,11 +148,12 @@ export async function POST(
 
     const supabase = getSupabase();
     const ipHash = clientIpKey(request, "daily-upload");
+    const owner = uploadOwner(request);
     const reservations: { id: string; storageKey: string; uploadUrl: string; index: number }[] = [];
     const rejected: { index: number; error: string; quota: UploadQuota; reason: string }[] = [];
     for (const [index, file] of prepared.entries()) {
       const storageKey = `${space.id}/${randomUUID()}`;
-      const { data: result, error: reserveError } = await supabase.rpc("reserve_r2_upload", {
+      const { data: result, error: reserveError } = await supabase.rpc("reserve_managed_r2_upload", {
         p_space_id: space.id,
         p_original_name: file.name,
         p_storage_key: storageKey,
@@ -156,6 +163,8 @@ export async function POST(
         p_max_space_bytes: maxSpaceBytes(),
         p_max_files_per_space: maxFilesPerSpace(),
         p_ip_hash: ipHash,
+        p_owner_token_hash: owner.hash,
+        p_expires_in_seconds: parsed.data.expiresInSeconds,
       });
       if (!reserveError && result?.error && result?.quota) {
         const quota = result.quota as UploadQuota;
@@ -200,7 +209,7 @@ export async function POST(
       return jsonNoStore({ ...rejected[0], rejected, uploads: [] },
         rejected[0].reason === "daily_upload_limit" ? 413 : 409);
     }
-    return jsonNoStore({
+    const response = jsonNoStore({
       rejected,
       uploads: reservations.map((reservation) => ({
         id: reservation.id,
@@ -212,6 +221,8 @@ export async function POST(
         headers: { "If-None-Match": "*" },
       })),
     }, 201);
+    if (owner.isNew && reservations.length) response.headers.append("Set-Cookie", ownerCookie(owner.token));
+    return response;
   } catch (error) {
     if (error instanceof Error && error.message.includes("filename")) {
       return jsonError("A file type does not match its filename.", 400);
