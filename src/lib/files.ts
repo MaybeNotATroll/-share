@@ -82,11 +82,7 @@ export function verifyFileSignature(extension: string, bytes: Uint8Array): boole
 }
 
 export function maxFileBytes(): number {
-  const configured = Number(process.env.MAX_FILE_BYTES ?? 52_428_800);
-  if (!Number.isSafeInteger(configured) || configured < 1 || configured > 52_428_800) {
-    return 52_428_800;
-  }
-  return configured;
+  return 500_000_000;
 }
 
 export function maxFilesPerRequest(): number {

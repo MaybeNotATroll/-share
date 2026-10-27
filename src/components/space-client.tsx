@@ -341,7 +341,7 @@ export function SpaceClient({ code }: { code: string }) {
         <span className="upload-symbol" aria-hidden="true">↑</span>
         <div>
           <h2>{uploading ? "Uploading your files…" : "Drop files here"}</h2>
-          <p>Images, videos, PDFs, and documents · up to 50 MiB each · 500 MB per IP per UTC day</p>
+          <p>Images, videos, PDFs, and documents · 500 MB total per IP per UTC day · one file can use the full allowance</p>
         </div>
         <button className="button button-primary" type="button" disabled={uploading} onClick={() => inputRef.current?.click()}>
           Choose files

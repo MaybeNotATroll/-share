@@ -26,20 +26,25 @@ test("24-hour access boundary is exclusive and presigned lifetimes never exceed 
 });
 
 test("server operational limits use configured values and safe defaults", (t) => {
-  env(t, "MAX_FILE_BYTES", "1234");
   env(t, "MAX_SPACE_BYTES", "9999");
   env(t, "UPLOAD_RATE_LIMIT", "3");
   env(t, "UPLOAD_RATE_WINDOW_SECONDS", "120");
-  assert.equal(maxFileBytes(), 1234);
   assert.equal(maxSpaceBytes(), 9999);
   assert.equal(uploadRateLimit(), 3);
   assert.equal(uploadRateWindowSeconds(), 120);
-  process.env.MAX_FILE_BYTES = "52428801";
   process.env.UPLOAD_RATE_LIMIT = "0";
   process.env.UPLOAD_RATE_WINDOW_SECONDS = "NaN";
-  assert.equal(maxFileBytes(), 52_428_800);
   assert.equal(uploadRateLimit(), 12);
   assert.equal(uploadRateWindowSeconds(), 60);
+});
+
+test("single attachments can use the full 500 MB daily allowance regardless of legacy configuration", (t) => {
+  env(t, "MAX_FILE_BYTES", "52428800");
+  assert.equal(maxFileBytes(), 500_000_000);
+  process.env.MAX_FILE_BYTES = "1234";
+  assert.equal(maxFileBytes(), 500_000_000);
+  delete process.env.MAX_FILE_BYTES;
+  assert.equal(maxFileBytes(), 500_000_000);
 });
 
 function configureR2(t: TestContext) {
@@ -57,7 +62,7 @@ test("R2 fails closed without valid server configuration", (t) => {
 
 test("upload signing binds exact length, type and write-once conditional with five minute TTL", async (t) => {
   configureR2(t);
-  const url = new URL(await createUploadUrl("space/random-key", 5, "text/plain"));
+  const url = new URL(await createUploadUrl("space/random-key", maxFileBytes(), "text/plain"));
   assert.equal(url.host, `${"0".repeat(32)}.r2.cloudflarestorage.com`);
   assert.match(url.pathname, /number-share-files\/space\/random-key$/);
   const signedHeaders = url.searchParams.get("X-Amz-SignedHeaders")?.split(";");

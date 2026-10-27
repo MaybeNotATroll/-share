@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import test from "node:test";
 import type { UploadQuota } from "../src/lib/upload-quota.ts";
+import { maxFileBytes } from "../src/lib/files.ts";
 
 const databaseUrl = process.env.QUOTA_TEST_DATABASE_URL;
 const exec = promisify(execFile);
@@ -37,13 +38,30 @@ test("persistent daily upload quota in PostgreSQL", { skip: !databaseUrl }, asyn
   const reserve = async (hash: string, size: number, space = spaces[0]): Promise<Reservation> =>
     JSON.parse(await sql(`select public.reserve_r2_upload(
       '${space}', 'quota.txt', '${space}/${randomUUID()}', 'text/plain',
-      ${size}, 52428800, 1073741824, 1000, '${hash}')`));
+      ${size}, ${maxFileBytes()}, 1073741824, 1000, '${hash}')`));
   const finish = (id: string) => sql(`update public.files set status = 'ready'
     where id = '${id}' and status = 'pending' returning id`);
   const usage = async (hash: string) => Number(await sql(`select coalesce((
     select uploaded_bytes from public.daily_upload_usage where ip_hash = '${hash}' and day = ${today}), 0)`));
   const seed = (hash: string, bytes: number) => sql(`insert into public.daily_upload_usage
     (ip_hash, day, uploaded_bytes) values ('${hash}', ${today}, ${bytes})`);
+
+  await t.test("one 500 MB attachment consumes only its IP's daily allowance across spaces", async () => {
+    const space = randomUUID();
+    spaces.push(space);
+    await sql(`insert into public.spaces (id, code, visibility)
+      values ('${space}', '${BigInt(`0x${space.replaceAll("-", "")}`)}', 'private')`);
+    const ip = freshIp();
+    const file = await reserve(ip, 500_000_000, space);
+    assert.ok(file.id, "the former 50 MiB limit must not reject a 500 MB file");
+    assert.equal(await usage(ip), 0);
+    assert.equal((await reserve(ip, 1, spaces[1])).error, "uploads_in_progress");
+    await finish(file.id);
+    assert.equal(await usage(ip), 500_000_000);
+    assert.equal((await reserve(ip, 1, spaces[1])).error, "daily_upload_limit");
+    assert.ok((await reserve(freshIp(), 500_000_000, space)).id, "another IP has its own full allowance");
+    await assert.rejects(reserve(freshIp(), 500_000_001, space), /invalid_upload/);
+  });
 
   await t.test("below and exactly at limit; above-limit rejection preserves ready files", async () => {
     const ip = freshIp();
@@ -169,7 +187,7 @@ test("persistent daily upload quota in PostgreSQL", { skip: !databaseUrl }, asyn
     assert.ok(next.id);
     const zoned = JSON.parse(await sql(`set time zone 'Pacific/Honolulu';
       select public.reserve_r2_upload('${spaces[0]}', 'quota.txt',
-        '${spaces[0]}/${randomUUID()}', 'text/plain', 1, 52428800, 1073741824, 1000, '${ip}')`));
+        '${spaces[0]}/${randomUUID()}', 'text/plain', 1, ${maxFileBytes()}, 1073741824, 1000, '${ip}')`));
     assert.equal(Date.parse(zoned.quota.resetAt), Date.parse(expectedReset), "session timezone cannot shift UTC reset");
     const boundaries = await sql(`select
       ('2026-10-27T23:59:59.999Z'::timestamptz at time zone 'UTC')::date,
@@ -203,7 +221,7 @@ test("persistent daily upload quota in PostgreSQL", { skip: !databaseUrl }, asyn
       await assert.rejects(sql(`set role ${role}; select * from public.daily_upload_usage`), /permission denied/);
       await assert.rejects(sql(`set role ${role}; select public.reserve_r2_upload(
         '${spaces[0]}', 'quota.txt', '${spaces[0]}/${randomUUID()}', 'text/plain',
-        1, 52428800, 1073741824, 1000, '${freshIp()}')`), /permission denied/);
+        1, ${maxFileBytes()}, 1073741824, 1000, '${freshIp()}')`), /permission denied/);
     }
     assert.equal(await sql(`select to_regprocedure(
       'public.reserve_r2_upload(uuid,text,text,text,bigint,bigint,bigint,integer)') is null`), "t");

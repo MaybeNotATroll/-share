@@ -220,7 +220,7 @@ export async function POST(
       return jsonError("One or more file types are not supported.", 400);
     }
     if (error instanceof Error && error.message.includes("individual size")) {
-      return jsonError("A file exceeds the individual size limit.", 413);
+      return jsonError("A file cannot exceed the 500 MB daily upload allowance per IP address.", 413);
     }
     return serviceError(error);
   }
