@@ -13,6 +13,7 @@ type FileRecord = {
   contentType: string;
   size: number;
   createdAt: string;
+  expiresAt: string;
 };
 type SpaceRecord = { code: string; createdAt: string | null };
 type UploadStatus = { name: string; progress: number; status: "uploading" | "failed" | "done"; error?: string };
@@ -90,6 +91,7 @@ export function SpaceClient({ code }: { code: string }) {
   const [copied, setCopied] = useState(false);
   const [previews, setPreviews] = useState<Record<string, string>>({});
   const [reporting, setReporting] = useState("");
+  const [expiresInSeconds, setExpiresInSeconds] = useState(86400);
 
   const validCode = isValidSpaceCode(code);
 
@@ -154,14 +156,18 @@ export function SpaceClient({ code }: { code: string }) {
     setUploading(true);
     setUploads(selectedFiles.map((file) => ({ name: file.name, progress: 0, status: "uploading" })));
     try {
-      const start = await fetch(`/api/spaces/${code}/files`, {
+      const reserve = () => fetch(`/api/spaces/${code}/files`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          expiresInSeconds,
           files: selectedFiles.map((file) => ({ name: file.name, size: file.size, type: file.type })),
         }),
         cache: "no-store",
       });
+      const start = navigator.locks
+        ? await navigator.locks.request("numa-owner-reservation", reserve)
+        : await reserve();
       const payload = await start.json();
       if (!start.ok && !Array.isArray(payload.rejected)) throw new Error(uploadErrorMessage(payload));
       const { uploads: reservations, rejected = [] } = payload;
@@ -216,6 +222,7 @@ export function SpaceClient({ code }: { code: string }) {
         ),
       );
     } finally {
+      window.dispatchEvent(new Event("numa-usage-changed"));
       uploadingRef.current = false;
       setUploading(false);
       if (inputRef.current) inputRef.current.value = "";
@@ -320,7 +327,7 @@ export function SpaceClient({ code }: { code: string }) {
           <div className="eyebrow"><span className="status-dot" /> Private space</div>
           <h1 className="space-code">{formatCode(space.code)}</h1>
           <p className="space-subtitle">
-            Only people with this exact number can view and add files. Files expire after 24 hours; visitors cannot delete them.
+            Only people with this exact number can view and add files. Files expire within 24 hours; only their owner or the operator can delete them.
           </p>
         </div>
         <button className="button button-secondary copy-code-button" onClick={copyCode}>
@@ -330,6 +337,16 @@ export function SpaceClient({ code }: { code: string }) {
 
       {error && <p className="notice notice-error" role="alert">{error}<button onClick={() => setError("")} aria-label="Dismiss error">×</button></p>}
 
+      <div className="expiration-choice">
+        <label htmlFor="upload-expiration">Expire new uploads after </label>
+        <select id="upload-expiration" value={expiresInSeconds} disabled={uploading} onChange={(event) => setExpiresInSeconds(Number(event.target.value))}>
+          <option value={3600}>1 hour</option>
+          <option value={21600}>6 hours</option>
+          <option value={43200}>12 hours</option>
+          <option value={86400}>24 hours (default)</option>
+        </select>
+        <p>Measured from upload reservation. Manage your files in <a href="/my-posts">My Posts</a> using this browser. Losing its cookies loses ownership access.</p>
+      </div>
       <section
         className={`upload-zone ${dragging ? "is-dragging" : ""} ${uploading ? "is-uploading" : ""}`}
         onDragOver={(event) => { event.preventDefault(); setDragging(true); }}
@@ -391,6 +408,7 @@ export function SpaceClient({ code }: { code: string }) {
                     <div className="file-details">
                       <h3 title={file.name}>{file.name}</h3>
                       <p>{prettySize(file.size)} <span>·</span> {prettyDate(file.createdAt)}</p>
+                      <p>Expires {prettyDate(file.expiresAt)}</p>
                     </div>
                   </div>
                   <div className="file-actions">

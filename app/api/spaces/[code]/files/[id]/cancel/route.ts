@@ -3,7 +3,6 @@ import { spaceCodeSchema } from "@/src/lib/validation";
 import { discardSmallRequestBody, enforceRateLimit, getSpace, jsonError, jsonNoStore } from "@/src/lib/http";
 import { getSupabase } from "@/src/lib/supabase";
 import { removeObjects } from "@/src/lib/storage";
-import { activeFileCutoff } from "@/src/lib/file-lifetime";
 
 export const runtime = "nodejs";
 
@@ -23,17 +22,19 @@ export async function POST(
     const space = await getSpace(code);
     if (!space) return jsonError("This space is unavailable.", 404);
     const supabase = getSupabase();
-    const { data: file } = await supabase
+    const { data: file, error: fileError } = await supabase
       .from("files")
       .select("storage_key,storage_provider")
       .eq("id", id)
       .eq("space_id", space.id)
       .eq("status", "pending")
-      .gt("created_at", activeFileCutoff())
+      .gt("expires_at", new Date().toISOString())
       .maybeSingle();
+    if (fileError) return jsonError("The upload could not be cancelled.", 503);
     if (file) {
       const { data: deleted, error } = await supabase.from("files").delete()
-        .eq("id", id).eq("status", "pending").select("id");
+        .eq("id", id).eq("space_id", space.id).eq("status", "pending")
+        .gt("expires_at", new Date().toISOString()).select("id");
       if (error) return jsonError("The upload could not be cancelled.", 503);
       if (deleted?.length) await removeObjects(file.storage_provider, [file.storage_key]);
     }

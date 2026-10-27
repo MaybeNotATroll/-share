@@ -1,6 +1,5 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { activeFileCutoff } from "./file-lifetime.ts";
 import type { StorageProvider } from "./storage.ts";
 
 type RemoveObjects = (provider: StorageProvider, keys: string[]) => Promise<void>;
@@ -12,16 +11,16 @@ export async function cleanupFiles(
 ) {
   let removedFiles = 0;
   let failedBatches = 0;
-  const cutoff = activeFileCutoff();
-  // Metadata deletion atomically queues object keys and releases quota.
+  const cutoff = new Date().toISOString();
+  // Metadata deletion queues object keys and releases space capacity, not daily usage.
   while (Date.now() < deadline) {
     const { data: expired, error } = await supabase.from("files")
-      .select("id").lte("created_at", cutoff)
-      .order("created_at", { ascending: true }).limit(100);
+      .select("id").lte("expires_at", cutoff)
+      .order("expires_at", { ascending: true }).limit(100);
     if (error) throw new Error("Cleanup unavailable.");
     if (!expired?.length) break;
     const { error: deleteError } = await supabase.from("files").delete()
-      .in("id", expired.map((file) => file.id)).lte("created_at", cutoff);
+      .in("id", expired.map((file) => file.id)).lte("expires_at", cutoff);
     if (deleteError) throw new Error("Cleanup unavailable.");
     removedFiles += expired.length;
   }

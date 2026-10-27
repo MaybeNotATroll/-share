@@ -21,7 +21,10 @@ function fixture(count = 0, queued: QueueEntry[] = []) {
         select() { return this; },
         delete() { action = "delete"; return this; },
         update(value: Partial<QueueEntry>) { action = "update"; patch = value; return this; },
-        lte() { return this; },
+        lte(column: string) {
+          assert.equal(column, table === "files" ? "expires_at" : "cleanup_after");
+          return this;
+        },
         order() { return this; },
         limit() { return this; },
         in(column: string, values: string[]) { if (column === "id") ids = values; return this; },

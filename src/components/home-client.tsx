@@ -148,8 +148,8 @@ export function HomeClient() {
           </article>
           <article>
             <span className="privacy-icon public-icon" aria-hidden="true">◎</span>
-            <h2>Nothing gets deleted</h2>
-            <p>Anyone with the number can view and post files, but cannot delete what was shared.</p>
+            <h2>Short-lived sharing</h2>
+            <p>Files expire within 24 hours. Uploaders can delete their own files from My Posts in the original browser.</p>
           </article>
         </div>
       </section>
